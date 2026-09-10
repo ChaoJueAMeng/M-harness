@@ -1,0 +1,10 @@
+target/
+.env
+.idea/workspace.xml
+.idea/shelf/
+*.iml
+.classpath
+.project
+.settings/
+hs_err_pid*
+replay_pid*
