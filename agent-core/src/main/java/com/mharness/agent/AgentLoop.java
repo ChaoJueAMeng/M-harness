@@ -69,7 +69,13 @@ public final class AgentLoop {
                 state.addAssistant(response.text(), response.toolCalls());
                 for (LlmToolCall call : response.toolCalls()) {
                     ToolResult result = executeOne(call);
-                    state.add(ChatTurn.tool(call.id(), call.name(), result.toJson()));
+                    String payload = result.toJson();
+                    String status = result.isDryRun() ? "DRY_RUN" : (result.success() ? "ok" : result.error());
+                    System.err.printf("[m-harness] %s %s (%d chars)%n",
+                            call.name(),
+                            status,
+                            payload.length());
+                    state.add(ChatTurn.tool(call.id(), call.name(), payload));
                 }
             }
             return AgentOutcome.maxSteps("达到步数上限，已停止。", checkpoint);
