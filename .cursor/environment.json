@@ -1,0 +1,4 @@
+{
+  "name": "M-harness",
+  "install": "./mvnw -B -pl agent-cli -am package"
+}
