@@ -17,6 +17,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * 在工作区内精确搜索文本。优先调用 ripgrep（{@code rg}），机器上没有 rg 或调用失败时退回 Java 遍历。
+ * 最多返回 50 条，单行截到 200 字符。
+ */
 public final class GrepTool implements AgentTool {
     private static final int MAX_HITS = 50;
     private static final int CONTEXT_CHARS = 200;
@@ -51,6 +55,7 @@ public final class GrepTool implements AgentTool {
         String glob = JsonArgs.optionalText(args, "glob", "");
         List<String> lines = tryRipgrep(query, glob);
         if (lines == null) {
+            // rg 不存在、超时或非 0/1 退出码时，用纯 Java 扫文件。
             lines = javaSearch(query, glob);
         }
         if (lines.isEmpty()) {
@@ -60,6 +65,10 @@ public final class GrepTool implements AgentTool {
         return ToolResult.ok(String.join("\n", lines) + suffix);
     }
 
+    /**
+     * 固定字面量搜索（{@code -F}），工作目录锁在仓库根。
+     * 返回 null 表示需要走 Java 回退；空列表表示搜过但没有命中。
+     */
     private List<String> tryRipgrep(String query, String glob) {
         List<String> command = new ArrayList<>();
         command.add("rg");
@@ -105,6 +114,7 @@ public final class GrepTool implements AgentTool {
         }
     }
 
+    /** 跳过构建产物和大文件/符号链接，按行 {@code contains} 做精确匹配。 */
     private List<String> javaSearch(String query, String glob) throws IOException {
         List<String> hits = new ArrayList<>();
         Files.walkFileTree(guard.workspace(), new SimpleFileVisitor<>() {
@@ -145,6 +155,7 @@ public final class GrepTool implements AgentTool {
         return hits;
     }
 
+    /** 把简单 glob（{@code *} / {@code **}）转成正则再匹配文件名或相对路径。 */
     private static boolean matchesGlob(String name, String glob) {
         String regex = glob.replace(".", "\\.").replace("**", "§§").replace("*", ".*").replace("§§", ".*");
         return name.replace('\\', '/').matches(regex);

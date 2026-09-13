@@ -9,10 +9,15 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * 在工作区根目录执行一条 shell 命令。工作目录锁定为仓库根，超时会杀掉整棵进程树。
+ * 破坏性命令由 {@link com.mharness.permission.HardDeny} 在执行前拦截，本类不再重复判断。
+ */
 public final class RunTerminalTool implements AgentTool {
     private final WorkspaceGuard guard;
     private final long timeoutSeconds;
 
+    /** 默认超时 120 秒。 */
     public RunTerminalTool(WorkspaceGuard guard) {
         this(guard, 120);
     }
@@ -65,6 +70,9 @@ public final class RunTerminalTool implements AgentTool {
         return ToolResult.ok("exit=" + process.exitValue() + "\n" + output);
     }
 
+    /**
+     * 尽量杀掉子进程：先 destroy 子孙，Windows 再补一次 {@code taskkill /T}，避免留下孤儿编译进程。
+     */
     private static void destroyTree(Process process) {
         long pid = process.pid();
         process.descendants().forEach(ProcessHandle::destroyForcibly);
@@ -84,6 +92,7 @@ public final class RunTerminalTool implements AgentTool {
         }
     }
 
+    /** 把进程 stdout/stderr 合并流读进缓冲区，进程结束时忽略 IO 异常。 */
     private static void drain(InputStream in, ByteArrayOutputStream buffer) {
         try {
             in.transferTo(buffer);

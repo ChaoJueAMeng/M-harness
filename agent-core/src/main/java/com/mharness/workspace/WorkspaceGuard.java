@@ -6,12 +6,15 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 
 /**
- * Resolves user-supplied paths against the workspace using Path.startsWith,
- * following realpath for existing files and parent directories.
+ * 把用户/模型给出的路径解析到工作区内，阻止 {@code ../} 和符号链接逃出仓库。
+ * 已存在文件走 realpath；新建文件则校验已存在的祖先目录仍在工作区内。
  */
 public final class WorkspaceGuard {
     private final Path workspace;
 
+    /**
+     * 规范化工作区根路径；目录已存在时解析到真实路径，避免通过 junction/symlink 绕过检查。
+     */
     public WorkspaceGuard(Path workspace) {
         try {
             Path absolute = workspace.toAbsolutePath().normalize();
@@ -21,10 +24,15 @@ public final class WorkspaceGuard {
         }
     }
 
+    /** 工作区根的绝对真实路径。 */
     public Path workspace() {
         return workspace;
     }
 
+    /**
+     * 解析已存在（或作为 dangling symlink 存在）的路径，并确认 realpath 仍在工作区内。
+     * 读文件、替换、glob 命中后访问文件时使用。
+     */
     public Path resolveExisting(String userPath) throws IOException {
         Path target = resolveNormalized(userPath);
         if (Files.exists(target) || Files.isSymbolicLink(target)) {
@@ -36,6 +44,10 @@ public final class WorkspaceGuard {
         return target;
     }
 
+    /**
+     * 解析「即将创建」的路径：目标本身可以还不存在，但必须落在工作区内，
+     * 且已存在的祖先目录的 realpath 也不能逃出工作区。
+     */
     public Path resolveForCreate(String userPath) throws IOException {
         Path target = resolveNormalized(userPath);
         assertInside(target);
@@ -58,6 +70,10 @@ public final class WorkspaceGuard {
         return target;
     }
 
+    /**
+     * 相对路径基于工作区拼接后 normalize；绝对路径只 normalize。
+     * 此步尚未跟符号链接，真正的越界检查在 {@link #assertInside(Path)}。
+     */
     public Path resolveNormalized(String userPath) {
         if (userPath == null || userPath.isBlank()) {
             throw new PathEscapeException("路径不能为空");
@@ -67,6 +83,7 @@ public final class WorkspaceGuard {
         return target;
     }
 
+    /** 用 {@link Path#startsWith} 判断规范化后的路径是否仍以工作区为前缀。 */
     public void assertInside(Path target) {
         Path candidate = target.isAbsolute() ? target.normalize() : workspace.resolve(target).normalize();
         if (!candidate.startsWith(workspace)) {
@@ -74,11 +91,16 @@ public final class WorkspaceGuard {
         }
     }
 
+    /** 把绝对路径转成工作区内的正斜杠相对路径，便于工具结果展示。 */
     public String relativize(Path path) {
         Path relative = workspace.relativize(path);
         return relative.toString().replace('\\', '/');
     }
 
+    /**
+     * 解析真实路径；目标是悬空符号链接时，按链接文本拼出指向位置再检查。
+     * 这样「指向工作区外的坏链接」也会被拦住。
+     */
     private static Path realPathEvenIfDangling(Path target) throws IOException {
         if (Files.exists(target)) {
             return target.toRealPath();

@@ -6,6 +6,9 @@ import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Queue;
 
+/**
+ * 测试用 ChatClient：按构造时给定的顺序返回预设 {@link LlmResponse}，用尽后返回纯文本 {@code done}。
+ */
 public final class ScriptedChatClient implements ChatClient {
     private final Queue<LlmResponse> responses = new ArrayDeque<>();
 

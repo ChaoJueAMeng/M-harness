@@ -15,6 +15,10 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * 按 glob 模式列出工作区内文件路径，最多 200 条。
+ * 跳过 {@code .git}、{@code target}、{@code node_modules}。不含通配符的模式会自动加上 {@literal **}/ 前缀。
+ */
 public final class GlobTool implements AgentTool {
     private static final int MAX_RESULTS = 200;
     private final WorkspaceGuard guard;
@@ -43,6 +47,7 @@ public final class GlobTool implements AgentTool {
     @Override
     public ToolResult execute(String arguments) throws Exception {
         String pattern = JsonArgs.requiredText(JsonArgs.parse(arguments), "pattern");
+        // 用户常写 "*.java"；补成 **/*.java 才能匹配子目录。
         String glob = pattern.contains("*") || pattern.contains("?") ? pattern : "**/" + pattern;
         PathMatcher matcher = FileSystems.getDefault().getPathMatcher("glob:" + glob);
         List<String> hits = new ArrayList<>();

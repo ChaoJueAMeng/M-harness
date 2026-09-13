@@ -8,6 +8,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+/**
+ * 仅用于新建文件。目标已存在则失败，避免整文件覆盖；改已有文件应使用 {@link SearchReplaceTool}。
+ */
 public final class WriteFileTool implements AgentTool {
     private final WorkspaceGuard guard;
 
@@ -38,6 +41,7 @@ public final class WriteFileTool implements AgentTool {
         var args = JsonArgs.parse(arguments);
         String userPath = JsonArgs.requiredText(args, "path");
         String content = args.has("content") ? args.get("content").asText() : "";
+        // 校验即将创建的路径及其祖先仍在工作区内。
         Path file = guard.resolveForCreate(userPath);
         if (Files.exists(file)) {
             return ToolResult.error("ALREADY_EXISTS", "文件已存在，请用 search_replace: " + userPath);

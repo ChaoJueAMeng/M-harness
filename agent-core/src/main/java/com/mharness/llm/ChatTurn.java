@@ -2,6 +2,9 @@ package com.mharness.llm;
 
 import java.util.List;
 
+/**
+ * 对话中的一轮。助手轮次可携带 toolCalls；工具轮次用 toolId/toolName 把结果对回对应调用。
+ */
 public record ChatTurn(
         Role role,
         String content,

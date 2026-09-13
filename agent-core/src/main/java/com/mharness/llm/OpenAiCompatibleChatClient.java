@@ -19,10 +19,17 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
+/**
+ * 通过 LangChain4j 调用 OpenAI 兼容的流式 Chat Completions。
+ * 部分 token 立刻回调 {@link TokenListener}，整段结束后再组装 {@link LlmResponse}。
+ */
 public final class OpenAiCompatibleChatClient implements ChatClient {
     private final StreamingChatModel model;
     private final TokenListener listener;
 
+    /**
+     * 生产构造：按 baseUrl / apiKey / modelName 创建官方 OpenAI 流式客户端（也适用于 DeepSeek 等兼容服务）。
+     */
     public OpenAiCompatibleChatClient(String baseUrl, String apiKey, String modelName, TokenListener listener) {
         this.listener = listener == null ? token -> {
         } : listener;
@@ -34,12 +41,16 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
                 .build();
     }
 
+    /** 测试构造：注入假的 StreamingChatModel。 */
     OpenAiCompatibleChatClient(StreamingChatModel model, TokenListener listener) {
         this.model = model;
         this.listener = listener == null ? token -> {
         } : listener;
     }
 
+    /**
+     * 把内部 {@link ChatTurn} 转成 LangChain4j 消息，阻塞等到流式响应结束。
+     */
     @Override
     public LlmResponse chat(List<ChatTurn> turns, List<ToolSpecification> tools) {
         ChatRequest request = ChatRequest.builder()
@@ -79,6 +90,10 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
         }
     }
 
+    /**
+     * 角色映射：SYSTEM/USER/ASSISTANT/TOOL → LangChain4j 对应消息类型。
+     * 带 toolCalls 的助手轮次发成 AiMessage(requests)，否则发成纯文本。
+     */
     static List<ChatMessage> toMessages(List<ChatTurn> turns) {
         List<ChatMessage> messages = new ArrayList<>();
         for (ChatTurn turn : turns) {
