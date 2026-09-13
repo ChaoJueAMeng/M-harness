@@ -1,0 +1,65 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>MHarness.Desktop</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSdkSelfContained>true</WindowsAppSdkSelfContained>
+    <Platform Condition="'$(Platform)' == ''">x64</Platform>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- unpackaged 也要开：用 WinApp SDK 自带的 makepri，不依赖 Visual Studio Appx 任务 -->
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <!-- 关掉 VS 那套 MRT 任务，否则 dotnet build 会找不到 ExpandPriContent -->
+    <EnableCoreMrtTooling>false</EnableCoreMrtTooling>
+    <ApplicationTitle>M Bot</ApplicationTitle>
+    <Version>0.1.0</Version>
+    <InformationalVersion>0.1.0</InformationalVersion>
+    <Product>M Bot</Product>
+    <Authors>M Bot</Authors>
+    <Description>安全优先、可回滚的本地 Coding Agent</Description>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.7.250606001" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\app.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Assets\m-harness-icon.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <Target Name="CopyServerJar" AfterTargets="Build">
+    <PropertyGroup>
+      <_ServerJar>$(MSBuildProjectDirectory)\..\agent-server\target\m-harness-server.jar</_ServerJar>
+    </PropertyGroup>
+    <Copy
+      SourceFiles="$(_ServerJar)"
+      DestinationFolder="$(OutDir)"
+      Condition="Exists('$(_ServerJar)')"
+      SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyServerJarToPublish" AfterTargets="Publish">
+    <PropertyGroup>
+      <_ServerJar>$(MSBuildProjectDirectory)\..\agent-server\target\m-harness-server.jar</_ServerJar>
+    </PropertyGroup>
+    <Copy
+      SourceFiles="$(_ServerJar)"
+      DestinationFolder="$(PublishDir)"
+      Condition="Exists('$(_ServerJar)')"
+      SkipUnchangedFiles="true" />
+  </Target>
+</Project>

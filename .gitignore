@@ -8,3 +8,8 @@ target/
 .settings/
 hs_err_pid*
 replay_pid*
+bin/
+obj/
+.vs/
+*.user
+dist/

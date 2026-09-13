@@ -1,0 +1,111 @@
+<Window
+    x:Class="MHarness.Desktop.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop Kind="Base"/>
+    </Window.SystemBackdrop>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <TitleBar x:Name="AppTitleBar" Title="M Bot">
+            <TitleBar.IconSource>
+                <BitmapIconSource UriSource="ms-appx:///Assets/m-harness-icon.png" ShowAsMonochrome="False"/>
+            </TitleBar.IconSource>
+        </TitleBar>
+
+        <Grid Grid.Row="1" Padding="16" RowSpacing="12" ColumnSpacing="12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <Grid ColumnSpacing="8" RowSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBox x:Name="WorkspaceBox" PlaceholderText="工作区目录" IsReadOnly="True"/>
+                <Button Grid.Column="1" Content="选择…" Click="PickWorkspace_Click"/>
+                <DropDownButton x:Name="ModeButton" Grid.Column="2" Width="120" VerticalAlignment="Center" Content="Ask">
+                    <DropDownButton.Flyout>
+                        <MenuFlyout Placement="Bottom">
+                            <RadioMenuFlyoutItem x:Name="AskModeItem" Text="Ask" GroupName="RunMode" IsChecked="True" Click="SelectAskMode_Click"/>
+                            <RadioMenuFlyoutItem x:Name="AgentModeItem" Text="Agent" GroupName="RunMode" Click="SelectAgentMode_Click"/>
+                        </MenuFlyout>
+                    </DropDownButton.Flyout>
+                </DropDownButton>
+                <CheckBox x:Name="DryRunBox" Grid.Column="3" Content="Dry-run" VerticalAlignment="Center"/>
+                <CheckBox x:Name="AutoApproveBox" Grid.Column="4" Content="自动批准" VerticalAlignment="Center"/>
+                <Button Grid.Column="5" Content="设置" Click="Settings_Click"/>
+                <Button Grid.Column="6" Content="回滚" Click="Rollback_Click"/>
+            </Grid>
+
+            <Grid Grid.Row="1" ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="2*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Text="对话" Margin="0,0,0,6"/>
+                    <ScrollViewer x:Name="TranscriptScroll" Grid.Row="1">
+                        <TextBox x:Name="TranscriptBox"
+                                 IsReadOnly="True"
+                                 AcceptsReturn="True"
+                                 TextWrapping="Wrap"
+                                 FontFamily="Consolas"/>
+                    </ScrollViewer>
+                </Grid>
+                <Grid Grid.Column="1">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Text="工具日志" Margin="0,0,0,6"/>
+                    <ScrollViewer x:Name="LogScroll" Grid.Row="1">
+                        <TextBox x:Name="LogBox"
+                                 IsReadOnly="True"
+                                 AcceptsReturn="True"
+                                 TextWrapping="Wrap"
+                                 FontFamily="Consolas"/>
+                    </ScrollViewer>
+                </Grid>
+            </Grid>
+
+            <TextBox x:Name="PromptBox"
+                     Grid.Row="2"
+                     MinHeight="72"
+                     AcceptsReturn="True"
+                     TextWrapping="Wrap"
+                     PlaceholderText="输入任务，然后发送"
+                     PreviewKeyDown="PromptBox_PreviewKeyDown"/>
+
+            <Grid Grid.Row="3" ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="StatusText" VerticalAlignment="Center" Opacity="0.8"/>
+                <Button x:Name="StopButton" Grid.Column="1" Content="停止" IsEnabled="False" Click="Stop_Click"/>
+                <Button x:Name="SendButton" Grid.Column="2" Content="发送" Click="Send_Click"/>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>
