@@ -19,6 +19,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -77,7 +78,54 @@ class AgentLoopTest {
         assertThat(result.error()).isEqualTo("UNKNOWN_TOOL");
     }
 
+    @Test
+    void observerReceivesToolStatus() {
+        List<String> seen = new ArrayList<>();
+        AgentLoop loop = loop(
+                PermissionMode.ASK,
+                false,
+                new ScriptedChatClient(
+                        new LlmResponse("", List.of(new LlmToolCall("1", "delete_everything", "{}"))),
+                        new LlmResponse("stopped", List.of())
+                ),
+                (toolName, status, chars) -> seen.add(toolName + ":" + status)
+        );
+        loop.run("do harm");
+        assertThat(seen).containsExactly("delete_everything:UNKNOWN_TOOL");
+    }
+
+    @Test
+    void cancelBeforeRunReturnsCancelled() {
+        AgentLoop loop = loop(PermissionMode.ASK, false, new ScriptedChatClient(
+                new LlmResponse("should not run", List.of())
+        ));
+        loop.cancel();
+        AgentOutcome outcome = loop.run("hello");
+        assertThat(outcome.status()).isEqualTo(AgentOutcome.Status.CANCELLED);
+        assertThat(outcome.text()).isEqualTo("已取消。");
+    }
+
+    @Test
+    void cancelAfterToolStopsBeforeNextModelCall() {
+        AgentLoop[] holder = new AgentLoop[1];
+        holder[0] = loop(
+                PermissionMode.ASK,
+                false,
+                new ScriptedChatClient(
+                        new LlmResponse("", List.of(new LlmToolCall("1", "delete_everything", "{}"))),
+                        new LlmResponse("should not reach", List.of())
+                ),
+                (toolName, status, chars) -> holder[0].cancel()
+        );
+        AgentOutcome outcome = holder[0].run("do harm");
+        assertThat(outcome.status()).isEqualTo(AgentOutcome.Status.CANCELLED);
+    }
+
     private AgentLoop loop(PermissionMode mode, boolean dryRun, ScriptedChatClient client) {
+        return loop(mode, dryRun, client, AgentObserver.NONE);
+    }
+
+    private AgentLoop loop(PermissionMode mode, boolean dryRun, ScriptedChatClient client, AgentObserver observer) {
         WorkspaceGuard guard = new WorkspaceGuard(workspace);
         ToolRegistry registry = new ToolRegistry(List.of(
                 new ReadFileTool(guard),
@@ -86,6 +134,6 @@ class AgentLoopTest {
         ));
         PermissionPolicy policy = new PermissionPolicy(mode, dryRun, true, new AutoApprovalService(true));
         ContextPacker packer = new ContextPacker(guard, AgentLimits.defaults(), mode, dryRun);
-        return new AgentLoop(client, registry, policy, packer, new CheckpointService(guard), AgentLimits.defaults());
+        return new AgentLoop(client, registry, policy, packer, new CheckpointService(guard), AgentLimits.defaults(), observer);
     }
 }
