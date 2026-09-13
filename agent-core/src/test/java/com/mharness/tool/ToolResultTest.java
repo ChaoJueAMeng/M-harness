@@ -9,10 +9,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ToolResultTest {
     @Test
     void toJsonIncludesContentNotDryRunFlag() {
-        String json = ToolResult.ok("README\n# M-harness").toJson();
+        String json = ToolResult.ok("README\n# M Bot").toJson();
         assertThat(json).contains("\"success\":true");
         assertThat(json).contains("README");
-        assertThat(json).contains("# M-harness");
+        assertThat(json).contains("# M Bot");
         assertThat(json).doesNotContain("dryRun");
     }
 

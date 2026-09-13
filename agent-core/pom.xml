@@ -11,7 +11,7 @@
     </parent>
 
     <artifactId>agent-core</artifactId>
-    <name>M-harness Core</name>
+    <name>M Bot Core</name>
 
     <dependencies>
         <dependency>

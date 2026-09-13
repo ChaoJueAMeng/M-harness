@@ -11,7 +11,7 @@
     </parent>
 
     <artifactId>agent-cli</artifactId>
-    <name>M-harness CLI</name>
+    <name>M Bot CLI</name>
 
     <dependencies>
         <dependency>
