@@ -36,4 +36,21 @@ class CheckpointServiceTest {
             assertThat(repo.resolve("HEAD").name()).isEqualTo(checkpoint.baseCommit());
         }
     }
+
+    @Test
+    void currentReturnsNullWhenNotAGitRepo() {
+        CheckpointService service = new CheckpointService(new WorkspaceGuard(workspace));
+        assertThat(service.current()).isNull();
+    }
+
+    @Test
+    void currentReturnsNullWhenGitRepoHasNoCheckpoint() throws Exception {
+        try (Git git = Git.init().setDirectory(workspace.toFile()).call()) {
+            Files.writeString(workspace.resolve("keep.txt"), "original");
+            git.add().addFilepattern("keep.txt").call();
+            git.commit().setMessage("init").setAuthor("t", "t@t").setCommitter("t", "t@t").setSign(false).call();
+            CheckpointService service = new CheckpointService(new WorkspaceGuard(workspace));
+            assertThat(service.current()).isNull();
+        }
+    }
 }

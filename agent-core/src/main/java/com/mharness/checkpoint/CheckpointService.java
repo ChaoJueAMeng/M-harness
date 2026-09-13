@@ -3,6 +3,7 @@ package com.mharness.checkpoint;
 import com.mharness.workspace.WorkspaceGuard;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.dircache.DirCache;
+import org.eclipse.jgit.errors.RepositoryNotFoundException;
 import org.eclipse.jgit.dircache.DirCacheBuilder;
 import org.eclipse.jgit.dircache.DirCacheEntry;
 import org.eclipse.jgit.lib.CommitBuilder;
@@ -30,7 +31,13 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
+/**
+ * 用独立 git ref 保存工作区快照，而不是 git stash 或 reset。
+ * 快照写在 {@code refs/m-harness/checkpoints/<id>}，包含当时磁盘上的文件（跳过 .git / target / node_modules）。
+ * 任务成功删除 ref；失败或手动 rollback 时 checkout 快照并删掉其后新建的文件。
+ */
 public final class CheckpointService {
+    /** checkpoint ref 的命名前缀，避免污染用户自己的分支。 */
     public static final String REF_PREFIX = "refs/m-harness/checkpoints/";
     private final WorkspaceGuard guard;
 
@@ -38,17 +45,23 @@ public final class CheckpointService {
         this.guard = guard;
     }
 
+    /**
+     * 扫描工作区、写入 snapshot commit，并把 ref 指过去。
+     * 要求工作区已经是 git 仓库；不会改 HEAD、不会 reset 工作区。
+     */
     public Checkpoint create() {
         Path gitDir = guard.workspace().resolve(".git");
         if (!Files.exists(gitDir)) {
             throw new CheckpointException("工作区不是 git 仓库");
         }
         try (Git git = Git.open(guard.workspace().toFile())) {
+            // 先读一次 status，确保仓库可读，顺带让 jgit 刷新索引状态。
             git.status().call();
             Repository repo = git.getRepository();
             String id = UUID.randomUUID().toString().substring(0, 8);
             ObjectId head = repo.resolve(Constants.HEAD);
             String base = head == null ? null : head.name();
+            // 把当前磁盘文件打成一棵独立 tree/commit，不经过用户 index。
             ObjectId snapshot = writeSnapshotCommit(repo, head, id);
             RefUpdate update = repo.updateRef(REF_PREFIX + id);
             update.setNewObjectId(snapshot);
@@ -65,6 +78,7 @@ public final class CheckpointService {
         }
     }
 
+    /** 删除指定 checkpoint 的 ref；null 时什么也不做。 */
     public void delete(Checkpoint checkpoint) {
         if (checkpoint == null) {
             return;
@@ -72,6 +86,7 @@ public final class CheckpointService {
         delete(checkpoint.checkpointId());
     }
 
+    /** 按 id 删除 {@code refs/m-harness/checkpoints/<id>}。 */
     public void delete(String checkpointId) {
         try (Git git = Git.open(guard.workspace().toFile())) {
             RefUpdate update = git.getRepository().updateRef(REF_PREFIX + checkpointId);
@@ -82,7 +97,15 @@ public final class CheckpointService {
         }
     }
 
+    /**
+     * 读取当前仓库里「最后一个」checkpoint ref。
+     * 不是 git 仓库或没有快照时返回 null。
+     */
     public Checkpoint current() {
+        Path gitDir = guard.workspace().resolve(".git");
+        if (!Files.exists(gitDir)) {
+            return null;
+        }
         try (Git git = Git.open(guard.workspace().toFile())) {
             List<Ref> refs = git.getRepository().getRefDatabase().getRefsByPrefix(REF_PREFIX);
             if (refs.isEmpty()) {
@@ -95,11 +118,20 @@ public final class CheckpointService {
                 String base = commit.getParentCount() > 0 ? commit.getParent(0).name() : null;
                 return new Checkpoint(id, base, commit.name(), Instant.ofEpochSecond(commit.getCommitTime()), guard.workspace());
             }
+        } catch (RepositoryNotFoundException e) {
+            return null;
+        } catch (CheckpointException e) {
+            throw e;
         } catch (Exception e) {
             throw new CheckpointException("读取 checkpoint 失败", e);
         }
     }
 
+    /**
+     * 把工作区强制恢复到快照内容。
+     * checkpoint 为 null 时回滚「当前」快照；没有快照则抛错。
+     * 除 checkout 外还会删除快照里不存在、之后新建的文件。
+     */
     public void rollback(Checkpoint checkpoint) {
         if (checkpoint == null) {
             Checkpoint current = current();
@@ -119,11 +151,13 @@ public final class CheckpointService {
                 throw new CheckpointException("找不到 snapshot: " + checkpoint.checkpointId());
             }
             Set<String> snapshotPaths = listTree(repo, snapshot);
+            // 强制把已跟踪路径恢复到快照内容。
             git.checkout()
                     .setStartPoint(snapshot.name())
                     .setAllPaths(true)
                     .setForced(true)
                     .call();
+            // checkout 不会删掉快照之后新建的文件，需要再扫一遍磁盘。
             deleteExtras(snapshotPaths);
         } catch (CheckpointException e) {
             throw e;
@@ -132,6 +166,10 @@ public final class CheckpointService {
         }
     }
 
+    /**
+     * 遍历工作区文件，写入 in-memory index，再生成 tree + commit。
+     * 父提交为当时 HEAD，方便从 snapshot 看出基于哪次提交。
+     */
     private ObjectId writeSnapshotCommit(Repository repo, ObjectId parent, String id) throws IOException {
         try (ObjectInserter inserter = repo.newObjectInserter()) {
             DirCache index = DirCache.newInCore();
@@ -182,6 +220,7 @@ public final class CheckpointService {
         }
     }
 
+    /** 列出 snapshot commit 树中的全部相对路径，供回滚时判断哪些文件是「多出来的」。 */
     private static Set<String> listTree(Repository repo, ObjectId commitId) throws IOException {
         Set<String> paths = new HashSet<>();
         try (RevWalk revWalk = new RevWalk(repo); TreeWalk treeWalk = new TreeWalk(repo)) {
@@ -195,6 +234,7 @@ public final class CheckpointService {
         return paths;
     }
 
+    /** 删除工作区里存在、但快照树中没有的普通文件（跳过 .git）。 */
     private void deleteExtras(Set<String> snapshotPaths) throws IOException {
         Path root = guard.workspace();
         Files.walkFileTree(root, new SimpleFileVisitor<>() {
