@@ -9,6 +9,10 @@ import com.mharness.agent.AgentRuntime;
 import com.mharness.checkpoint.Checkpoint;
 import com.mharness.checkpoint.CheckpointException;
 import com.mharness.config.HarnessConfig;
+import com.mharness.llm.ChatClient;
+import com.mharness.llm.ChatTurn;
+import com.mharness.llm.OpenAiCompatibleChatClient;
+import com.mharness.llm.TitleGenerator;
 import com.mharness.permission.ApprovalService;
 import com.mharness.permission.AutoApprovalService;
 import com.mharness.permission.PermissionMode;
@@ -24,16 +28,20 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 
 /**
- * 本机 HTTP API：启动/取消 Agent、SSE 推事件、人工批准、checkpoint / 设置。
- * 同一时刻只允许一个 ActiveRun；请求必须带 Bearer token。
+ * 本机 HTTP API：启动/取消 Agent、SSE 推事件、人工批准、checkpoint / 设置 / 生成标题。
+ * 同一时刻只允许一个 ActiveRun；标题请求不占用该锁。请求必须带 Bearer token。
  */
 public final class HarnessHttpServer implements AutoCloseable {
     private final HttpServer http;
@@ -45,6 +53,9 @@ public final class HarnessHttpServer implements AutoCloseable {
     private final ExecutorService agentExecutor = Executors.newSingleThreadExecutor(r -> daemon("m-harness-agent", r));
     private final Object lock = new Object();
     private ActiveRun active;
+    /** 标题接口用的 ChatClient；测试可替换，避免打真实模型。 */
+    private volatile Function<HarnessConfig, ChatClient> titleClients = config ->
+            new OpenAiCompatibleChatClient(config.baseUrl(), config.apiKey(), config.model(), ignored -> {});
 
     private HarnessHttpServer(HttpServer http, String token) {
         this.http = http;
@@ -139,6 +150,10 @@ public final class HarnessHttpServer implements AutoCloseable {
                 putSettings(exchange);
                 return;
             }
+            if ("POST".equals(method) && "/v1/title".equals(path)) {
+                generateTitle(exchange);
+                return;
+            }
             sendJson(exchange, 404, Map.of("error", "not found"));
         } catch (Exception e) {
             sendJson(exchange, 500, Map.of("error", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
@@ -205,14 +220,15 @@ public final class HarnessHttpServer implements AutoCloseable {
             }
             active = run;
         }
-        agentExecutor.execute(() -> executeRun(run, prompt));
+        List<ChatTurn> history = parseHistory(body);
+        agentExecutor.execute(() -> executeRun(run, prompt, history));
         sendJson(exchange, 200, Map.of("runId", runId));
     }
 
     /** 在 agent 线程里跑循环，把结局写成 SSE {@code done} 事件。 */
-    private void executeRun(ActiveRun run, String prompt) {
+    private void executeRun(ActiveRun run, String prompt, List<ChatTurn> history) {
         try {
-            AgentOutcome outcome = run.loop.run(prompt);
+            AgentOutcome outcome = run.loop.run(prompt, history);
             emit(run.events, doneEvent(outcome));
         } catch (Exception e) {
             emit(run.events, failedEvent(e.getMessage()));
@@ -335,6 +351,37 @@ public final class HarnessHttpServer implements AutoCloseable {
         JsonNode body = readJson(exchange);
         HarnessConfig.save(text(body, "baseUrl"), text(body, "apiKey"), text(body, "model"));
         sendJson(exchange, 200, Map.of("ok", true));
+    }
+
+    /**
+     * POST /v1/title：用第一条用户消息生成短标题。不占用 ActiveRun，可与主任务并行。
+     */
+    private void generateTitle(HttpExchange exchange) throws IOException {
+        JsonNode body = readJson(exchange);
+        String prompt = text(body, "prompt");
+        if (prompt == null || prompt.isBlank()) {
+            sendJson(exchange, 400, Map.of("error", "缺少 prompt"));
+            return;
+        }
+        HarnessConfig config = HarnessConfig.load(null);
+        try {
+            config.requireApiKey();
+        } catch (IllegalStateException e) {
+            sendJson(exchange, 400, Map.of("error", e.getMessage()));
+            return;
+        }
+        try {
+            ChatClient chat = titleClients.apply(config);
+            String title = new TitleGenerator(chat).generate(prompt);
+            sendJson(exchange, 200, Map.of("title", title == null ? "" : title));
+        } catch (RuntimeException e) {
+            sendJson(exchange, 502, Map.of("error", e.getMessage() == null ? "生成标题失败" : e.getMessage()));
+        }
+    }
+
+    /** 测试替换标题所用 ChatClient，避免请求真实模型。 */
+    void setTitleChatClientFactory(Function<HarnessConfig, ChatClient> factory) {
+        this.titleClients = Objects.requireNonNull(factory);
     }
 
     /** 只认当前这一个 active runId。 */
@@ -466,6 +513,33 @@ public final class HarnessHttpServer implements AutoCloseable {
     private static String text(JsonNode body, String field) {
         JsonNode node = body.get(field);
         return node == null || node.isNull() ? null : node.asText();
+    }
+
+    /**
+     * 读取可选 {@code history} 数组。只接受 user/assistant；tool、system、未知 role 或空 content 直接丢掉，不报 400。
+     */
+    private static List<ChatTurn> parseHistory(JsonNode body) {
+        JsonNode history = body.get("history");
+        if (history == null || !history.isArray() || history.isEmpty()) {
+            return List.of();
+        }
+        List<ChatTurn> turns = new ArrayList<>();
+        for (JsonNode item : history) {
+            if (item == null || !item.isObject()) {
+                continue;
+            }
+            String role = text(item, "role");
+            String content = text(item, "content");
+            if (content == null || content.isBlank()) {
+                continue;
+            }
+            if ("user".equalsIgnoreCase(role)) {
+                turns.add(ChatTurn.user(content));
+            } else if ("assistant".equalsIgnoreCase(role)) {
+                turns.add(ChatTurn.assistant(content, List.of()));
+            }
+        }
+        return turns;
     }
 
     /** 从 query string 取单个键（已 URL-decode）。 */

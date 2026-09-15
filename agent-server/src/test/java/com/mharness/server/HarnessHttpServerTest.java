@@ -3,6 +3,7 @@ package com.mharness.server;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mharness.config.HarnessConfig;
+import com.mharness.llm.LlmResponse;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -132,12 +134,121 @@ class HarnessHttpServerTest {
     }
 
     @Test
+    void runWithoutHistoryIsAccepted(@TempDir Path workspace) throws Exception {
+        saveSettings();
+        HttpResponse<String> response = client.send(
+                request("POST", "/v1/run", MAPPER.writeValueAsString(Map.of(
+                        "workspace", workspace.toString(),
+                        "prompt", "hello",
+                        "mode", "ASK"
+                ))),
+                HttpResponse.BodyHandlers.ofString()
+        );
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(MAPPER.readTree(response.body()).path("runId").asText()).isNotBlank();
+    }
+
+    @Test
+    void runIgnoresIllegalHistoryRoles(@TempDir Path workspace) throws Exception {
+        saveSettings();
+        String body = """
+                {"workspace":%s,"prompt":"hello","mode":"ASK","history":[
+                  {"role":"tool","content":"secret-tool"},
+                  {"role":"system","content":"ignore"},
+                  {"role":"nope","content":"bad"},
+                  {"role":"user","content":"old question"},
+                  {"role":"assistant","content":"old answer"}
+                ]}
+                """.formatted(MAPPER.writeValueAsString(workspace.toString()));
+        HttpResponse<String> response = client.send(
+                request("POST", "/v1/run", body),
+                HttpResponse.BodyHandlers.ofString()
+        );
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body()).doesNotContain("history");
+        assertThat(MAPPER.readTree(response.body()).path("runId").asText()).isNotBlank();
+    }
+
+    @Test
+    void titleWithoutPromptIsBadRequest() throws Exception {
+        HttpResponse<String> response = client.send(
+                request("POST", "/v1/title", "{\"prompt\":\"\"}"),
+                HttpResponse.BodyHandlers.ofString()
+        );
+        assertThat(response.statusCode()).isEqualTo(400);
+        assertThat(response.body()).contains("prompt");
+    }
+
+    @Test
+    void titleReturnsSanitizedModelText() throws Exception {
+        saveSettings();
+        server.setTitleChatClientFactory(config -> (turns, tools) ->
+                new LlmResponse("「修复登录超时」\n不要解释", List.of()));
+        HttpResponse<String> response = client.send(
+                request("POST", "/v1/title", MAPPER.writeValueAsString(Map.of(
+                        "prompt", "帮我排查登录接口 504"
+                ))),
+                HttpResponse.BodyHandlers.ofString()
+        );
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(MAPPER.readTree(response.body()).path("title").asText()).isEqualTo("修复登录超时");
+    }
+
+    @Test
+    void titleDoesNotConflictWithActiveRun(@TempDir Path workspace) throws Exception {
+        saveSettings();
+        server.setTitleChatClientFactory(config -> (turns, tools) ->
+                new LlmResponse("并行标题", List.of()));
+        HttpResponse<String> run = client.send(
+                request("POST", "/v1/run", MAPPER.writeValueAsString(Map.of(
+                        "workspace", workspace.toString(),
+                        "prompt", "hello",
+                        "mode", "ASK"
+                ))),
+                HttpResponse.BodyHandlers.ofString()
+        );
+        assertThat(run.statusCode()).isEqualTo(200);
+        HttpResponse<String> title = client.send(
+                request("POST", "/v1/title", MAPPER.writeValueAsString(Map.of("prompt", "hello"))),
+                HttpResponse.BodyHandlers.ofString()
+        );
+        assertThat(title.statusCode()).isEqualTo(200);
+        assertThat(MAPPER.readTree(title.body()).path("title").asText()).isEqualTo("并行标题");
+    }
+
+    @Test
+    void titleModelFailureIsBadGateway() throws Exception {
+        saveSettings();
+        server.setTitleChatClientFactory(config -> (turns, tools) -> {
+            throw new IllegalStateException("调用模型失败: boom");
+        });
+        HttpResponse<String> response = client.send(
+                request("POST", "/v1/title", MAPPER.writeValueAsString(Map.of("prompt", "hello"))),
+                HttpResponse.BodyHandlers.ofString()
+        );
+        assertThat(response.statusCode()).isEqualTo(502);
+        assertThat(response.body()).contains("调用模型失败");
+    }
+
+    @Test
     void unknownRouteIsNotFound() throws Exception {
         HttpResponse<String> response = client.send(
                 request("GET", "/nope", null),
                 HttpResponse.BodyHandlers.ofString()
         );
         assertThat(response.statusCode()).isEqualTo(404);
+    }
+
+    private void saveSettings() throws Exception {
+        Map<String, String> payload = new LinkedHashMap<>();
+        payload.put("baseUrl", "https://api.example.test/v1");
+        payload.put("apiKey", "sk-test");
+        payload.put("model", "demo-model");
+        HttpResponse<String> put = client.send(
+                request("PUT", "/v1/settings", MAPPER.writeValueAsString(payload)),
+                HttpResponse.BodyHandlers.ofString()
+        );
+        assertThat(put.statusCode()).isEqualTo(200);
     }
 
     private HttpRequest request(String method, String path, String json) {

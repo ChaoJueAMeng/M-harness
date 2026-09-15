@@ -192,6 +192,7 @@ java -jar agent-server/target/m-harness-server.jar --bind 127.0.0.1 --port 0
 | `POST` | `/v1/rollback` | 回滚到最近 checkpoint |
 | `GET` | `/v1/settings` | 读取全局设置（Key 只返回是否已设置和后四位） |
 | `PUT` | `/v1/settings` | 写入全局 `~/.m-harness/.env` |
+| `POST` | `/v1/title` | 根据第一条用户消息生成侧栏标题，返回 `{ "title": "..." }`；不占用正在运行的任务 |
 
 ## 工具
 
