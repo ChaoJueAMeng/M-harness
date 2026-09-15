@@ -1,4 +1,5 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Markup;
 
 namespace MHarness.Desktop;
 
@@ -11,6 +12,21 @@ public partial class App : Application
 
     public App()
     {
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            if (e.ExceptionObject is Exception ex)
+            {
+                CrashLog.Write("AppDomain", ex);
+            }
+        };
+        AppDomain.CurrentDomain.FirstChanceException += (_, e) =>
+        {
+            if (e.Exception is XamlParseException)
+            {
+                CrashLog.Write("FirstChance", e.Exception);
+            }
+        };
+        UnhandledException += (_, e) => CrashLog.Write("UnhandledException", e.Exception);
         InitializeComponent();
     }
 
@@ -19,7 +35,15 @@ public partial class App : Application
     /// </summary>
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
-        window = new MainWindow();
-        window.Activate();
+        try
+        {
+            window = new MainWindow();
+            window.Activate();
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write("OnLaunched", ex);
+            throw;
+        }
     }
 }
