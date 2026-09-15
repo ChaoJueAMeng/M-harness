@@ -128,6 +128,22 @@ internal sealed class AgentApiClient : IDisposable
         await SendJsonAsync(HttpMethod.Put, "v1/settings", new { baseUrl, apiKey, model }, cancellationToken);
 
     /// <summary>
+    /// POST /v1/title，用第一条用户消息生成侧栏标题。失败时返回空串。
+    /// </summary>
+    public async Task<string> GenerateTitleAsync(string prompt, CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(45));
+        string body = await SendJsonAsync(HttpMethod.Post, "v1/title", new { prompt }, timeout.Token);
+        using var doc = JsonDocument.Parse(body);
+        if (!doc.RootElement.TryGetProperty("title", out var title) || title.ValueKind != JsonValueKind.String)
+        {
+            return "";
+        }
+        return title.GetString() ?? "";
+    }
+
+    /// <summary>
     /// GET /health，服务已就绪时返回 true。
     /// </summary>
     public async Task<bool> HealthAsync(CancellationToken cancellationToken)
@@ -190,4 +206,14 @@ internal sealed class RunRequest
     public string Mode { get; init; } = "ASK";
     public bool DryRun { get; init; }
     public bool AutoApprove { get; init; }
+    public List<HistoryTurn> History { get; init; } = new();
+}
+
+/// <summary>
+/// 发给 /v1/run 的先前轮次。role 为 user 或 assistant。
+/// </summary>
+internal sealed class HistoryTurn
+{
+    public string Role { get; init; } = "user";
+    public string Content { get; init; } = "";
 }

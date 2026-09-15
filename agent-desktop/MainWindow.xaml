@@ -1,13 +1,17 @@
 <Window
     x:Class="MHarness.Desktop.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:MHarness.Desktop">
 
     <Window.SystemBackdrop>
         <MicaBackdrop Kind="Base"/>
     </Window.SystemBackdrop>
 
     <Grid>
+        <Grid.Resources>
+            <CollectionViewSource x:Key="GroupedConversations" IsSourceGrouped="True" ItemsPath="Items"/>
+        </Grid.Resources>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
@@ -19,92 +23,193 @@
             </TitleBar.IconSource>
         </TitleBar>
 
-        <Grid Grid.Row="1" Padding="16" RowSpacing="12" ColumnSpacing="12">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-            </Grid.RowDefinitions>
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="268"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition x:Name="ToolLogColumn" Width="0"/>
+            </Grid.ColumnDefinitions>
 
-            <Grid ColumnSpacing="8" RowSpacing="8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <TextBox x:Name="WorkspaceBox" PlaceholderText="工作区目录" IsReadOnly="True"/>
-                <Button Grid.Column="1" Content="选择…" Click="PickWorkspace_Click"/>
-                <DropDownButton x:Name="ModeButton" Grid.Column="2" Width="120" VerticalAlignment="Center" Content="Ask">
-                    <DropDownButton.Flyout>
-                        <MenuFlyout Placement="Bottom">
-                            <RadioMenuFlyoutItem x:Name="AskModeItem" Text="Ask" GroupName="RunMode" IsChecked="True" Click="SelectAskMode_Click"/>
-                            <RadioMenuFlyoutItem x:Name="AgentModeItem" Text="Agent" GroupName="RunMode" Click="SelectAgentMode_Click"/>
-                        </MenuFlyout>
-                    </DropDownButton.Flyout>
-                </DropDownButton>
-                <CheckBox x:Name="DryRunBox" Grid.Column="3" Content="Dry-run" VerticalAlignment="Center"/>
-                <CheckBox x:Name="AutoApproveBox" Grid.Column="4" Content="自动批准" VerticalAlignment="Center"/>
-                <Button Grid.Column="5" Content="设置" Click="Settings_Click"/>
-                <Button Grid.Column="6" Content="回滚" Click="Rollback_Click"/>
+            <Grid Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" Padding="12,8,12,12">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Button x:Name="NewChatButton"
+                        Content="新建对话"
+                        HorizontalAlignment="Stretch"
+                        Style="{StaticResource AccentButtonStyle}"
+                        Click="NewChat_Click"
+                        Margin="0,4,0,8"/>
+                <TextBox x:Name="FilterBox"
+                         Grid.Row="1"
+                         PlaceholderText="过滤对话"
+                         Margin="0,0,0,8"
+                         TextChanged="FilterBox_TextChanged"/>
+                <ListView x:Name="ConversationList"
+                          Grid.Row="2"
+                          ItemsSource="{Binding Source={StaticResource GroupedConversations}}"
+                          SelectionMode="Single"
+                          SelectionChanged="ConversationList_SelectionChanged"
+                          IsItemClickEnabled="False">
+                    <ListView.GroupStyle>
+                        <GroupStyle>
+                            <GroupStyle.HeaderContainerStyle>
+                                <Style TargetType="ListViewHeaderItem">
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                    <Setter Property="Padding" Value="0"/>
+                                </Style>
+                            </GroupStyle.HeaderContainerStyle>
+                            <GroupStyle.HeaderTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="4,8,0,4" ColumnSpacing="4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{Binding Key}"
+                                                   FontWeight="SemiBold"
+                                                   Opacity="0.72"
+                                                   VerticalAlignment="Center"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                        <Button Grid.Column="1"
+                                                Style="{StaticResource SidebarIconButtonStyle}"
+                                                Click="AddWorkspaceChat_Click"
+                                                Tag="{Binding}"
+                                                ToolTipService.ToolTip="在此工作区新建对话"
+                                                AutomationProperties.Name="在此工作区新建对话">
+                                            <FontIcon Glyph="&#xE710;" FontSize="12" Opacity="0.72"/>
+                                        </Button>
+                                    </Grid>
+                                </DataTemplate>
+                            </GroupStyle.HeaderTemplate>
+                        </GroupStyle>
+                    </ListView.GroupStyle>
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="local:Conversation">
+                            <StackPanel Spacing="2" Margin="0,4,0,4">
+                                <StackPanel.ContextFlyout>
+                                    <MenuFlyout>
+                                        <MenuFlyoutItem Text="在此工作区新建对话"
+                                                        Click="AddWorkspaceChat_Click"
+                                                        Tag="{x:Bind Workspace}"/>
+                                        <MenuFlyoutSeparator/>
+                                        <MenuFlyoutItem Text="删除对话"
+                                                        Click="DeleteConversation_Click"
+                                                        Tag="{x:Bind Id}"/>
+                                    </MenuFlyout>
+                                </StackPanel.ContextFlyout>
+                                <TextBlock Text="{x:Bind Title}" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Text="{x:Bind RelativeTime}" Opacity="0.55" FontSize="11"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+                <Button Grid.Row="3"
+                        Content="设置"
+                        HorizontalAlignment="Stretch"
+                        Click="Settings_Click"
+                        Margin="0,8,0,0"/>
             </Grid>
 
-            <Grid Grid.Row="1" ColumnSpacing="12">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="2*"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
+            <Grid Grid.Column="1" Padding="16,8,16,12" RowSpacing="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
                 <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
-                    </Grid.RowDefinitions>
-                    <TextBlock Text="对话" Margin="0,0,0,6"/>
-                    <ScrollViewer x:Name="TranscriptScroll" Grid.Row="1">
-                        <TextBox x:Name="TranscriptBox"
-                                 IsReadOnly="True"
-                                 AcceptsReturn="True"
-                                 TextWrapping="Wrap"
-                                 FontFamily="Consolas"/>
-                    </ScrollViewer>
+                    <StackPanel x:Name="EmptyState"
+                                VerticalAlignment="Center"
+                                HorizontalAlignment="Stretch"
+                                MaxWidth="720">
+                        <TextBlock x:Name="EmptyHint"
+                                   Text="点击左侧「新建对话」，选择一个工作区目录"
+                                   HorizontalAlignment="Center"
+                                   FontSize="18"
+                                   Opacity="0.78"
+                                   TextWrapping="Wrap"
+                                   TextAlignment="Center"/>
+                    </StackPanel>
+                    <Grid x:Name="ChatState" Visibility="Collapsed">
+                        <ScrollViewer x:Name="TranscriptScroll">
+                            <StackPanel x:Name="MessagePanel" Spacing="16" Padding="4,4,8,12"/>
+                        </ScrollViewer>
+                    </Grid>
                 </Grid>
-                <Grid Grid.Column="1">
+
+                <Grid Grid.Row="1" RowSpacing="8">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
-                    <TextBlock Text="工具日志" Margin="0,0,0,6"/>
-                    <ScrollViewer x:Name="LogScroll" Grid.Row="1">
-                        <TextBox x:Name="LogBox"
-                                 IsReadOnly="True"
-                                 AcceptsReturn="True"
-                                 TextWrapping="Wrap"
-                                 FontFamily="Consolas"/>
-                    </ScrollViewer>
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Border x:Name="WorkspaceChip"
+                                    Padding="10,4"
+                                    CornerRadius="8"
+                                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                    VerticalAlignment="Center">
+                                <TextBlock x:Name="WorkspaceNameText" Text="未选择对话" TextTrimming="CharacterEllipsis"/>
+                            </Border>
+                            <DropDownButton x:Name="ModeButton" Width="108" VerticalAlignment="Center" Content="Ask">
+                                <DropDownButton.Flyout>
+                                    <MenuFlyout Placement="Bottom">
+                                        <RadioMenuFlyoutItem x:Name="AskModeItem" Text="Ask" GroupName="RunMode" IsChecked="True" Click="SelectAskMode_Click"/>
+                                        <RadioMenuFlyoutItem x:Name="AgentModeItem" Text="Agent" GroupName="RunMode" Click="SelectAgentMode_Click"/>
+                                    </MenuFlyout>
+                                </DropDownButton.Flyout>
+                            </DropDownButton>
+                            <CheckBox x:Name="DryRunBox" Content="Dry-run" VerticalAlignment="Center"/>
+                            <CheckBox x:Name="AutoApproveBox" Content="自动批准" VerticalAlignment="Center"/>
+                            <Button Content="回滚" Click="Rollback_Click"/>
+                        </StackPanel>
+                        <Button Grid.Column="1" x:Name="ToolLogButton" Content="工具日志" Click="ToggleToolLog_Click"/>
+                    </Grid>
+                    <TextBox x:Name="PromptBox"
+                             Grid.Row="1"
+                             MinHeight="72"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             PlaceholderText="输入任务，Enter 发送，Shift+Enter 换行"
+                             PreviewKeyDown="PromptBox_PreviewKeyDown"/>
+                </Grid>
+
+                <Grid Grid.Row="2" ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="StatusText" VerticalAlignment="Center" Opacity="0.8" TextWrapping="Wrap"/>
+                    <Button x:Name="StopButton" Grid.Column="1" Content="停止" IsEnabled="False" Click="Stop_Click"/>
+                    <Button x:Name="SendButton" Grid.Column="2" Content="发送" Click="Send_Click"/>
                 </Grid>
             </Grid>
 
-            <TextBox x:Name="PromptBox"
-                     Grid.Row="2"
-                     MinHeight="72"
-                     AcceptsReturn="True"
-                     TextWrapping="Wrap"
-                     PlaceholderText="输入任务，然后发送"
-                     PreviewKeyDown="PromptBox_PreviewKeyDown"/>
-
-            <Grid Grid.Row="3" ColumnSpacing="8">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <TextBlock x:Name="StatusText" VerticalAlignment="Center" Opacity="0.8"/>
-                <Button x:Name="StopButton" Grid.Column="1" Content="停止" IsEnabled="False" Click="Stop_Click"/>
-                <Button x:Name="SendButton" Grid.Column="2" Content="发送" Click="Send_Click"/>
+            <Grid x:Name="ToolLogPane"
+                  Grid.Column="2"
+                  Visibility="Collapsed"
+                  Padding="8,8,12,12">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <TextBlock Text="工具日志" Margin="0,0,0,6" Opacity="0.72"/>
+                <ScrollViewer x:Name="LogScroll" Grid.Row="1">
+                    <TextBox x:Name="LogBox"
+                             IsReadOnly="True"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             FontFamily="Consolas"/>
+                </ScrollViewer>
             </Grid>
         </Grid>
     </Grid>
