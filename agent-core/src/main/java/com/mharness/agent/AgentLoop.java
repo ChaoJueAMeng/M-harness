@@ -3,6 +3,7 @@ package com.mharness.agent;
 import com.mharness.checkpoint.Checkpoint;
 import com.mharness.checkpoint.CheckpointService;
 import com.mharness.context.ContextPacker;
+import com.mharness.context.HistoryCompactor;
 import com.mharness.llm.ChatClient;
 import com.mharness.llm.ChatTurn;
 import com.mharness.llm.LlmResponse;
@@ -87,10 +88,21 @@ public final class AgentLoop {
      * @return 完成 / 步数上限 / 失败 / 取消 四种结局之一
      */
     public AgentOutcome run(String userTask) {
+        return run(userTask, List.of());
+    }
+
+    /**
+     * 同 {@link #run(String)}，但先把同会话更早的 USER/ASSISTANT 轮次经 {@link HistoryCompactor} 压进状态。
+     * {@code prior} 为 null 时视为没有历史。本轮工具循环仍走 {@link ContextPacker}。
+     */
+    public AgentOutcome run(String userTask, List<ChatTurn> prior) {
         if (cancelled.get()) {
             return AgentOutcome.cancelled("已取消。", null);
         }
         AgentState state = new AgentState();
+        for (ChatTurn turn : HistoryCompactor.compact(prior == null ? List.of() : prior)) {
+            state.add(turn);
+        }
         state.add(ChatTurn.user(userTask));
         Checkpoint checkpoint = null;
         // 只有真正会改工作区时才拍快照；Ask / dry-run 不会落盘，无需回滚点。

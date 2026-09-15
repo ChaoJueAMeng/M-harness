@@ -2,6 +2,7 @@ package com.mharness.agent;
 
 import com.mharness.checkpoint.CheckpointService;
 import com.mharness.context.ContextPacker;
+import com.mharness.llm.ChatTurn;
 import com.mharness.llm.LlmResponse;
 import com.mharness.llm.LlmToolCall;
 import com.mharness.llm.ScriptedChatClient;
@@ -103,6 +104,40 @@ class AgentLoopTest {
         AgentOutcome outcome = loop.run("hello");
         assertThat(outcome.status()).isEqualTo(AgentOutcome.Status.CANCELLED);
         assertThat(outcome.text()).isEqualTo("已取消。");
+    }
+
+    @Test
+    void priorTurnsAreIncludedInFirstModelCall() {
+        ScriptedChatClient client = new ScriptedChatClient(new LlmResponse("later", List.of()));
+        AgentLoop loop = loop(PermissionMode.ASK, false, client);
+        loop.run("now", List.of(
+                ChatTurn.user("original-task"),
+                ChatTurn.assistant("old-answer", List.of())
+        ));
+        assertThat(client.calls()).isNotEmpty();
+        assertThat(client.calls().getFirst()).extracting(ChatTurn::content)
+                .contains("original-task", "old-answer", "now");
+    }
+
+    @Test
+    void compactedPriorDropsMiddleTurnsFromModelCall() {
+        List<ChatTurn> prior = new ArrayList<>();
+        prior.add(ChatTurn.user("original-task"));
+        prior.add(ChatTurn.assistant("ack-0", List.of()));
+        for (int i = 1; i <= 20; i++) {
+            prior.add(ChatTurn.user("mid-" + i));
+            prior.add(ChatTurn.assistant("ans-" + i, List.of()));
+        }
+        ScriptedChatClient client = new ScriptedChatClient(new LlmResponse("later", List.of()));
+        AgentLoop loop = loop(PermissionMode.ASK, false, client);
+        loop.run("now", prior);
+        assertThat(client.calls()).isNotEmpty();
+        List<String> contents = client.calls().getFirst().stream()
+                .filter(turn -> turn.role() != ChatTurn.Role.SYSTEM)
+                .map(ChatTurn::content)
+                .toList();
+        assertThat(contents).contains("original-task", "mid-20", "ans-20", "now");
+        assertThat(contents).doesNotContain("mid-1", "ans-1", "mid-2");
     }
 
     @Test
