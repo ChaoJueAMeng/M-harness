@@ -12,7 +12,7 @@ public sealed class ChatMessage
 }
 
 /// <summary>
-/// 绑定到一个工作区目录的本地会话。磁盘存全文，发给模型前由服务端压缩。
+/// 本地会话。可以尚未绑定工作区；运行时落到临时码本。磁盘存全文，发给模型前由服务端压缩。
 /// </summary>
 public sealed class Conversation
 {
@@ -25,13 +25,16 @@ public sealed class Conversation
     public string ToolLog { get; set; } = "";
 
     [JsonIgnore]
+    public bool IsUnbound => string.IsNullOrWhiteSpace(Workspace);
+
+    [JsonIgnore]
     public string WorkspaceName
     {
         get
         {
-            if (string.IsNullOrWhiteSpace(Workspace))
+            if (IsUnbound)
             {
-                return "未知工作区";
+                return "无工作区";
             }
             return Path.GetFileName(Workspace.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
         }

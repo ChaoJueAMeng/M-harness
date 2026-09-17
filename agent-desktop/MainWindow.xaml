@@ -11,6 +11,12 @@
     <Grid>
         <Grid.Resources>
             <CollectionViewSource x:Key="GroupedConversations" IsSourceGrouped="True" ItemsPath="Items"/>
+            <Style x:Key="WorkspacePickerButtonStyle" TargetType="Button">
+                <Setter Property="HorizontalAlignment" Value="Stretch"/>
+                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                <Setter Property="Padding" Value="16,14"/>
+                <Setter Property="CornerRadius" Value="8"/>
+            </Style>
         </Grid.Resources>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -122,12 +128,60 @@
                 </Grid.RowDefinitions>
 
                 <Grid>
+                    <StackPanel x:Name="WorkspacePicker"
+                                VerticalAlignment="Center"
+                                HorizontalAlignment="Stretch"
+                                MaxWidth="440"
+                                Spacing="8"
+                                Visibility="Collapsed">
+                        <TextBlock Text="开始新对话"
+                                   FontSize="20"
+                                   FontWeight="SemiBold"
+                                   HorizontalAlignment="Center"/>
+                        <TextBlock Text="选择空白码本，或打开一个已有文件夹。"
+                                   HorizontalAlignment="Center"
+                                   Opacity="0.62"
+                                   TextWrapping="Wrap"
+                                   TextAlignment="Center"
+                                   Margin="0,0,0,8"/>
+                        <Button x:Name="StartScratchButton"
+                                Style="{StaticResource WorkspacePickerButtonStyle}"
+                                Click="StartScratch_Click"
+                                ToolTipService.ToolTip="在临时码本中开始，不绑定项目目录"
+                                AutomationProperties.Name="从空白开始">
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <FontIcon Glyph="&#xE710;" FontSize="16" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="1" Text="从空白开始" VerticalAlignment="Center"/>
+                            </Grid>
+                        </Button>
+                        <Button x:Name="UseExistingFolderButton"
+                                Style="{StaticResource WorkspacePickerButtonStyle}"
+                                Click="UseExistingFolder_Click"
+                                ToolTipService.ToolTip="选择本机文件夹作为工作区"
+                                AutomationProperties.Name="使用已有文件夹">
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <FontIcon Glyph="&#xE8B7;" FontSize="16" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="1" Text="使用已有文件夹" VerticalAlignment="Center"/>
+                                <FontIcon Grid.Column="2" Glyph="&#xE76C;" FontSize="12" Opacity="0.55" VerticalAlignment="Center"/>
+                            </Grid>
+                        </Button>
+                    </StackPanel>
                     <StackPanel x:Name="EmptyState"
                                 VerticalAlignment="Center"
                                 HorizontalAlignment="Stretch"
-                                MaxWidth="720">
+                                MaxWidth="720"
+                                Visibility="Collapsed">
                         <TextBlock x:Name="EmptyHint"
-                                   Text="点击左侧「新建对话」，选择一个工作区目录"
+                                   Text="输入任务开始对话"
                                    HorizontalAlignment="Center"
                                    FontSize="18"
                                    Opacity="0.78"
@@ -141,7 +195,7 @@
                     </Grid>
                 </Grid>
 
-                <Grid Grid.Row="1" RowSpacing="8">
+                <Grid x:Name="ComposerBar" Grid.Row="1" RowSpacing="8">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
@@ -152,13 +206,14 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Border x:Name="WorkspaceChip"
+                            <Button x:Name="WorkspaceChip"
                                     Padding="10,4"
-                                    CornerRadius="8"
-                                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
-                                    VerticalAlignment="Center">
-                                <TextBlock x:Name="WorkspaceNameText" Text="未选择对话" TextTrimming="CharacterEllipsis"/>
-                            </Border>
+                                    VerticalAlignment="Center"
+                                    Click="BindWorkspace_Click"
+                                    ToolTipService.ToolTip="绑定工作区目录"
+                                    AutomationProperties.Name="绑定工作区目录">
+                                <TextBlock x:Name="WorkspaceNameText" Text="未选择对话" TextTrimming="CharacterEllipsis" MaxWidth="220"/>
+                            </Button>
                             <DropDownButton x:Name="ModeButton" Width="108" VerticalAlignment="Center" Content="Ask">
                                 <DropDownButton.Flyout>
                                     <MenuFlyout Placement="Bottom">
@@ -178,8 +233,7 @@
                              MinHeight="72"
                              AcceptsReturn="True"
                              TextWrapping="Wrap"
-                             PlaceholderText="输入任务，Enter 发送，Shift+Enter 换行"
-                             PreviewKeyDown="PromptBox_PreviewKeyDown"/>
+                             PlaceholderText="输入任务，Enter 发送，Shift+Enter 换行"/>
                 </Grid>
 
                 <Grid Grid.Row="2" ColumnSpacing="8">

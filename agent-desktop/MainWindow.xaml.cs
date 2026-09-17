@@ -13,7 +13,7 @@ using WinRT.Interop;
 namespace MHarness.Desktop;
 
 /// <summary>
-/// 主窗口：左侧本地会话历史，中间对话；新建对话时选择工作区目录。
+/// 主窗口：左侧本地会话历史，中间对话；新建对话先选择空白码本或已有文件夹。
 /// </summary>
 public sealed partial class MainWindow : Window
 {
@@ -32,6 +32,8 @@ public sealed partial class MainWindow : Window
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? markdownTimer;
     private CollectionViewSource conversationViewSource = null!;
     private bool sidebarReady;
+    private bool promptComposing;
+    private Task? serverStartTask;
 
     public MainWindow()
     {
@@ -40,6 +42,9 @@ public sealed partial class MainWindow : Window
             store = ConversationStore.Open();
             InitializeComponent();
             conversationViewSource = (CollectionViewSource)((FrameworkElement)Content).Resources["GroupedConversations"];
+            PromptBox.AddHandler(UIElement.PreviewKeyDownEvent, new KeyEventHandler(PromptBox_PreviewKeyDown), handledEventsToo: true);
+            PromptBox.TextCompositionStarted += PromptBox_TextCompositionStarted;
+            PromptBox.TextCompositionEnded += PromptBox_TextCompositionEnded;
             Title = "M Bot";
             MaximizeOnLaunch();
             string icon = Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico");
@@ -61,6 +66,7 @@ public sealed partial class MainWindow : Window
                 RestoreConversations();
                 ApplyConversationLayout();
                 UpdateSendEnabled();
+                _ = KickoffServerAsync();
             }
         }
         catch (Exception ex)
@@ -82,6 +88,7 @@ public sealed partial class MainWindow : Window
             RestoreConversations();
             ApplyConversationLayout();
             UpdateSendEnabled();
+            _ = KickoffServerAsync();
         }
         catch (Exception ex)
         {
@@ -128,17 +135,50 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 窗口第一次激活时再启动 Java 服务，避免在构造函数里做耗时 IO。
+    /// 窗口第一次激活时再最大化一次；本地服务在 Loaded 里启动，避免在 Activated 里最大化打断启动。
     /// </summary>
-    private async void MainWindow_Activated(object sender, WindowActivatedEventArgs args)
+    private void MainWindow_Activated(object sender, WindowActivatedEventArgs args)
     {
         Activated -= MainWindow_Activated;
+        _ = KickoffServerAsync();
         MaximizeOnLaunch();
-        await StartServerAsync();
-        if (current != null)
+    }
+
+    /// <summary>
+    /// 窗口就绪后拉起 Java 服务；Loaded / Activated 都走这里，只启动一次。
+    /// </summary>
+    private async Task KickoffServerAsync()
+    {
+        try
         {
-            await RefreshCheckpointAsync(current.Workspace);
+            await EnsureServerStartedAsync();
+            if (current != null)
+            {
+                await RefreshCheckpointAsync(ResolveRunWorkspace(current));
+            }
         }
+        catch (Exception ex)
+        {
+            CrashLog.Write("KickoffServer", ex);
+            SetStatus("启动失败：" + ex.Message);
+            UpdateSendEnabled();
+        }
+    }
+
+    /// <summary>
+    /// 已有客户端则跳过；启动中则等待；失败后允许再试一次。
+    /// </summary>
+    private Task EnsureServerStartedAsync()
+    {
+        if (client != null)
+        {
+            return Task.CompletedTask;
+        }
+        if (serverStartTask == null || serverStartTask.IsCompleted)
+        {
+            serverStartTask = StartServerAsync();
+        }
+        return serverStartTask;
     }
 
     /// <summary>
@@ -149,15 +189,21 @@ public sealed partial class MainWindow : Window
         try
         {
             SetStatus("正在启动本地服务…");
-            server = await Task.Run(ServerProcess.Start);
-            client = new AgentApiClient(server.Port, server.Token);
-            bool ok = await client.HealthAsync(CancellationToken.None);
+            if (server == null || server.HasExited)
+            {
+                server?.Dispose();
+                server = await Task.Run(ServerProcess.Start).ConfigureAwait(false);
+            }
+            var api = new AgentApiClient(server.Port, server.Token);
+            bool ok = await api.HealthAsync(CancellationToken.None).ConfigureAwait(false);
+            client = api;
             SetStatus(ok ? "Bot 已就绪" : "服务已启动但健康检查失败");
         }
         catch (Exception ex)
         {
-            SetStatus("启动失败：" + ex.Message);
+            CrashLog.Write("StartServer", ex);
             client = null;
+            SetStatus("启动失败：" + ex.Message);
         }
         UpdateSendEnabled();
     }
@@ -210,12 +256,42 @@ public sealed partial class MainWindow : Window
         {
             ShowConversation(last, selectInList: true);
         }
+        else
+        {
+            ShowWorkspacePicker();
+        }
     }
 
     /// <summary>
-    /// 新建对话：先选工作区目录，取消则不创建。
+    /// 新建对话：先进入工作区选择页，不立刻创建空白会话。
     /// </summary>
-    private async void NewChat_Click(object sender, RoutedEventArgs e)
+    private void NewChat_Click(object sender, RoutedEventArgs e)
+    {
+        if (running)
+        {
+            SetStatus("请等待当前任务结束再新建对话");
+            return;
+        }
+        ShowWorkspacePicker();
+    }
+
+    /// <summary>
+    /// 从空白开始：创建未绑定工作区的对话，发送任务时落到临时码本。
+    /// </summary>
+    private async void StartScratch_Click(object sender, RoutedEventArgs e)
+    {
+        if (running)
+        {
+            SetStatus("请等待当前任务结束再新建对话");
+            return;
+        }
+        await OpenNewConversationAsync("");
+    }
+
+    /// <summary>
+    /// 使用已有文件夹：选目录后再创建对话。
+    /// </summary>
+    private async void UseExistingFolder_Click(object sender, RoutedEventArgs e)
     {
         if (running)
         {
@@ -243,9 +319,9 @@ public sealed partial class MainWindow : Window
         string? path = WorkspaceFromSource((sender as FrameworkElement)?.Tag)
             ?? WorkspaceFromGroupHeader(sender)
             ?? current?.Workspace;
-        if (string.IsNullOrWhiteSpace(path))
+        if (path == null)
         {
-            SetStatus("无法识别该工作区，请用顶部「新建对话」选择目录");
+            SetStatus("无法识别该工作区，请用顶部「新建对话」");
             return;
         }
         await OpenNewConversationAsync(path);
@@ -280,12 +356,18 @@ public sealed partial class MainWindow : Window
         {
             return;
         }
+        bool unbound = conversation.IsUnbound;
+        string id = conversation.Id;
         bool wasCurrent = current != null && current.Id == conversation.Id;
         if (!store.Delete(conversation.Id))
         {
             SetStatus("对话不存在或已被删除");
             RefreshSidebar();
             return;
+        }
+        if (unbound)
+        {
+            HarnessPaths.TryDeleteScratch(id);
         }
         if (wasCurrent)
         {
@@ -299,7 +381,7 @@ public sealed partial class MainWindow : Window
             {
                 RefreshSidebar();
                 ShowConversation(next, selectInList: true);
-                _ = RefreshCheckpointAsync(next.Workspace);
+                _ = RefreshCheckpointAsync(ResolveRunWorkspace(next));
             }
         }
         else
@@ -341,13 +423,31 @@ public sealed partial class MainWindow : Window
 
     private void ClearConversationView()
     {
+        ShowWorkspacePicker();
+    }
+
+    /// <summary>
+    /// 显示工作区选择页：不创建会话，侧栏取消选中。关闭窗口仍恢复上次打开的对话。
+    /// </summary>
+    private void ShowWorkspacePicker()
+    {
         current = null;
         streamingMarkdown = null;
         markdownTimer?.Stop();
         MessagePanel.Children.Clear();
         LogBox.Text = "";
+        suppressSelection = true;
+        try
+        {
+            ConversationList.SelectedItem = null;
+        }
+        finally
+        {
+            suppressSelection = false;
+        }
         ApplyConversationLayout();
         UpdateSendEnabled();
+        SetStatus("选择空白码本或已有文件夹");
     }
 
     private async Task OpenNewConversationAsync(string path)
@@ -355,14 +455,14 @@ public sealed partial class MainWindow : Window
         var conversation = new Conversation
         {
             Title = "新对话",
-            Workspace = path,
+            Workspace = path ?? "",
         };
         store.Save(conversation);
         store.SetLastOpened(conversation.Id);
         RefreshSidebar();
         ShowConversation(conversation, selectInList: true);
         PromptBox.Focus(FocusState.Programmatic);
-        await RefreshCheckpointAsync(path);
+        await RefreshCheckpointAsync(ResolveRunWorkspace(conversation));
     }
 
     /// <summary>
@@ -388,22 +488,22 @@ public sealed partial class MainWindow : Window
 
     private static bool TryWorkspace(object? source, out string? workspace)
     {
-        if (source is string path && !string.IsNullOrWhiteSpace(path))
+        if (source is string path)
         {
             workspace = path;
             return true;
         }
-        if (source is ConversationGroup group && !string.IsNullOrWhiteSpace(group.Workspace))
+        if (source is ConversationGroup group)
         {
-            workspace = group.Workspace;
+            workspace = group.Workspace ?? "";
             return true;
         }
         if (source is IEnumerable<Conversation> conversations)
         {
-            string? first = conversations.FirstOrDefault()?.Workspace;
-            if (!string.IsNullOrWhiteSpace(first))
+            Conversation? first = conversations.FirstOrDefault();
+            if (first != null)
             {
-                workspace = first;
+                workspace = first.Workspace ?? "";
                 return true;
             }
         }
@@ -419,6 +519,62 @@ public sealed partial class MainWindow : Window
         InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
         var folder = await picker.PickSingleFolderAsync();
         return folder?.Path;
+    }
+
+    /// <summary>
+    /// 点击工作区芯片：把当前对话绑定（或更换）到用户选择的目录。不搬运临时码本里的文件。
+    /// </summary>
+    private async void BindWorkspace_Click(object sender, RoutedEventArgs e)
+    {
+        if (running)
+        {
+            SetStatus("请等待当前任务结束再绑定工作区");
+            return;
+        }
+        if (current == null)
+        {
+            SetStatus("请先新建对话");
+            return;
+        }
+        string? path = await PickWorkspacePathAsync();
+        if (path == null)
+        {
+            return;
+        }
+        current.Workspace = path;
+        store.Save(current);
+        RefreshSidebar();
+        ShowConversation(current, selectInList: true);
+        await RefreshCheckpointAsync(path);
+        SetStatus("已绑定工作区：" + path);
+    }
+
+    private static string WorkspaceChipTooltip(Conversation conversation)
+    {
+        if (conversation.IsUnbound)
+        {
+            return "未绑定目录，点击选择工作区。Agent 会写到临时码本。";
+        }
+        return conversation.Workspace + "（点击更换）";
+    }
+
+    /// <summary>
+    /// 发给服务端的工作区路径：已绑定则用用户目录，否则用该对话的临时码本。
+    /// </summary>
+    private static string ResolveRunWorkspace(Conversation conversation)
+    {
+        if (!conversation.IsUnbound)
+        {
+            return conversation.Workspace.Trim();
+        }
+        return HarnessPaths.ScratchWorkspace(conversation.Id);
+    }
+
+    private static string EnsureRunWorkspace(Conversation conversation)
+    {
+        string path = ResolveRunWorkspace(conversation);
+        Directory.CreateDirectory(path);
+        return path;
     }
 
     private void FilterBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -459,7 +615,7 @@ public sealed partial class MainWindow : Window
             return;
         }
         ShowConversation(selected, selectInList: false);
-        _ = RefreshCheckpointAsync(selected.Workspace);
+        _ = RefreshCheckpointAsync(ResolveRunWorkspace(selected));
     }
 
     /// <summary>
@@ -525,7 +681,7 @@ public sealed partial class MainWindow : Window
         current = conversation;
         store.SetLastOpened(conversation.Id);
         WorkspaceNameText.Text = conversation.WorkspaceName;
-        ToolTipService.SetToolTip(WorkspaceChip, conversation.Workspace);
+        ToolTipService.SetToolTip(WorkspaceChip, WorkspaceChipTooltip(conversation));
         LogBox.Text = conversation.ToolLog ?? "";
         RenderMessages(conversation);
         ApplyConversationLayout();
@@ -546,20 +702,28 @@ public sealed partial class MainWindow : Window
 
     private void ApplyConversationLayout()
     {
-        bool none = current == null;
+        bool picking = current == null;
         bool empty = current != null && current.Messages.Count == 0;
-        EmptyState.Visibility = none || empty ? Visibility.Visible : Visibility.Collapsed;
-        ChatState.Visibility = !none && !empty ? Visibility.Visible : Visibility.Collapsed;
+        WorkspacePicker.Visibility = picking ? Visibility.Visible : Visibility.Collapsed;
+        EmptyState.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+        ChatState.Visibility = !picking && !empty ? Visibility.Visible : Visibility.Collapsed;
+        ComposerBar.Visibility = picking ? Visibility.Collapsed : Visibility.Visible;
+        StopButton.Visibility = picking ? Visibility.Collapsed : Visibility.Visible;
+        SendButton.Visibility = picking ? Visibility.Collapsed : Visibility.Visible;
         PromptBox.PlaceholderText = empty
             ? "输入任务，Enter 发送，Shift+Enter 换行"
             : "输入后续任务，Enter 发送";
-        EmptyHint.Text = none
-            ? "点击左侧「新建对话」，选择一个工作区目录"
+        EmptyHint.Text = current != null && current.IsUnbound
+            ? "输入任务开始对话。需要时点上方工作区绑定真实目录。"
             : "输入任务开始对话";
-        if (none)
+        if (picking)
         {
             WorkspaceNameText.Text = "未选择对话";
             ToolTipService.SetToolTip(WorkspaceChip, null);
+        }
+        if (WorkspaceChip != null)
+        {
+            WorkspaceChip.IsEnabled = !picking && !running;
         }
     }
 
@@ -681,16 +845,28 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
+    /// 中文输入法组字开始：此时 Enter 是上屏，不是发送。
+    /// </summary>
+    private void PromptBox_TextCompositionStarted(object sender, TextCompositionStartedEventArgs e)
+    {
+        promptComposing = true;
+    }
+
+    /// <summary>
+    /// 中文输入法组字结束。
+    /// </summary>
+    private void PromptBox_TextCompositionEnded(object sender, TextCompositionEndedEventArgs e)
+    {
+        promptComposing = false;
+    }
+
+    /// <summary>
     /// Enter 发送当前输入；Shift+Enter 换行。空内容不发送。
+    /// 输入法开启时 e.Key 常为 ProcessKey（229），必须看 OriginalKey。
     /// </summary>
     private void PromptBox_PreviewKeyDown(object sender, KeyRoutedEventArgs e)
     {
-        if (e.Key != VirtualKey.Enter)
-        {
-            return;
-        }
-        var shift = InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift);
-        if ((shift & Windows.UI.Core.CoreVirtualKeyStates.Down) == Windows.UI.Core.CoreVirtualKeyStates.Down)
+        if (promptComposing || !IsEnterKey(e) || IsShiftDown())
         {
             return;
         }
@@ -698,24 +874,59 @@ public sealed partial class MainWindow : Window
         Send_Click(sender, e);
     }
 
+    private static bool IsEnterKey(KeyRoutedEventArgs e)
+    {
+        return e.Key == VirtualKey.Enter || e.OriginalKey == VirtualKey.Enter;
+    }
+
+    private static bool IsShiftDown()
+    {
+        try
+        {
+            var state = InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift);
+            return (state & Windows.UI.Core.CoreVirtualKeyStates.Down) == Windows.UI.Core.CoreVirtualKeyStates.Down;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
     /// <summary>
     /// 发送任务：把本会话已有 user/assistant 作为 history，StartRun → 订阅 SSE。
     /// </summary>
     private async void Send_Click(object sender, RoutedEventArgs e)
     {
+        if (client == null)
+        {
+            await EnsureServerStartedAsync();
+        }
         if (running || client == null || current == null)
         {
             if (current == null)
             {
-                SetStatus("请先新建对话并选择工作区");
+                SetStatus("请先新建对话");
+            }
+            else if (client == null)
+            {
+                SetStatus("本地服务未就绪，请稍候再发送");
             }
             return;
         }
-        string workspace = current.Workspace.Trim();
-        string prompt = ReadPrompt();
-        if (workspace.Length == 0 || !Directory.Exists(workspace))
+        string workspace;
+        try
         {
-            SetStatus("工作区目录不存在，请新建对话并重新选择");
+            workspace = EnsureRunWorkspace(current);
+        }
+        catch (Exception ex)
+        {
+            SetStatus("无法创建临时码本：" + ex.Message);
+            return;
+        }
+        string prompt = ReadPrompt();
+        if (!Directory.Exists(workspace))
+        {
+            SetStatus("工作区目录不存在，请绑定一个目录后重试");
             return;
         }
         if (prompt.Length == 0)
@@ -846,13 +1057,24 @@ public sealed partial class MainWindow : Window
         NewChatButton.IsEnabled = !running;
         ConversationList.IsEnabled = !running;
         FilterBox.IsEnabled = !running;
+        StartScratchButton.IsEnabled = !running;
+        UseExistingFolderButton.IsEnabled = !running;
         StopButton.IsEnabled = running;
         PromptBox.IsEnabled = !running;
+        if (WorkspaceChip != null)
+        {
+            WorkspaceChip.IsEnabled = current != null && !running;
+        }
         UpdateSendEnabled();
     }
 
     private void UpdateSendEnabled()
     {
+        if (!DispatcherQueue.HasThreadAccess)
+        {
+            DispatcherQueue.TryEnqueue(UpdateSendEnabled);
+            return;
+        }
         SendButton.IsEnabled = client != null && !running && current != null;
     }
 
@@ -1134,10 +1356,10 @@ public sealed partial class MainWindow : Window
         {
             return;
         }
-        string workspace = current?.Workspace.Trim() ?? "";
-        if (workspace.Length == 0)
+        string workspace = current == null ? "" : ResolveRunWorkspace(current);
+        if (workspace.Length == 0 || !Directory.Exists(workspace))
         {
-            SetStatus("请先新建对话并选择工作区");
+            SetStatus(current == null ? "请先新建对话" : "没有可回滚的工作区");
             return;
         }
         var confirm = new ContentDialog
@@ -1169,12 +1391,16 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 选择工作区后查询是否已有 checkpoint，写到状态栏。
+    /// 查询当前运行工作区是否已有 checkpoint，写到状态栏。
     /// </summary>
     private async Task RefreshCheckpointAsync(string workspace)
     {
-        if (string.IsNullOrWhiteSpace(workspace))
+        if (string.IsNullOrWhiteSpace(workspace) || !Directory.Exists(workspace))
         {
+            if (current != null && current.IsUnbound)
+            {
+                SetStatus("未绑定工作区，发送任务时使用临时码本");
+            }
             return;
         }
         if (client == null)
@@ -1211,6 +1437,11 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private void SetStatus(string text)
     {
+        if (!DispatcherQueue.HasThreadAccess)
+        {
+            DispatcherQueue.TryEnqueue(() => SetStatus(text));
+            return;
+        }
         StatusText.Text = text;
     }
 

@@ -32,12 +32,7 @@ internal sealed class ConversationStore
     /// </summary>
     public static string DefaultRoot()
     {
-        string? env = Environment.GetEnvironmentVariable("M_HARNESS_CONFIG_DIR");
-        if (!string.IsNullOrWhiteSpace(env))
-        {
-            return Path.Combine(env, "conversations");
-        }
-        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".m-harness", "conversations");
+        return Path.Combine(HarnessPaths.ConfigDir(), "conversations");
     }
 
     public static ConversationStore Open()
@@ -177,7 +172,8 @@ internal sealed class ConversationStore
     }
 
     /// <summary>
-    /// 按完整工作区路径分组，组头用目录名；组内按更新时间新到旧；组按组内最新会话排序。
+    /// 按完整工作区路径分组；未绑定的会话归入「无工作区」。
+    /// 组内按更新时间新到旧；组按组内最新会话排序。
     /// </summary>
     public static List<ConversationGroup> Group(IEnumerable<Conversation> all, string? filter)
     {
@@ -191,11 +187,20 @@ internal sealed class ConversationStore
                 || item.Workspace.Contains(needle, StringComparison.OrdinalIgnoreCase));
         }
         return query
-            .GroupBy(item => item.Workspace, StringComparer.OrdinalIgnoreCase)
-            .Select(group => new ConversationGroup(
-                string.IsNullOrWhiteSpace(group.First().WorkspaceName) ? "未知工作区" : group.First().WorkspaceName,
-                group.First().Workspace,
-                group.OrderByDescending(item => item.UpdatedAt)))
+            .GroupBy(item => item.IsUnbound ? "" : item.Workspace, StringComparer.OrdinalIgnoreCase)
+            .Select(group =>
+            {
+                bool unbound = string.IsNullOrWhiteSpace(group.Key);
+                string name = unbound ? "无工作区" : group.First().WorkspaceName;
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    name = "未知工作区";
+                }
+                return new ConversationGroup(
+                    name,
+                    unbound ? "" : group.First().Workspace,
+                    group.OrderByDescending(item => item.UpdatedAt));
+            })
             .OrderByDescending(group => group.LatestUpdate)
             .ToList();
     }

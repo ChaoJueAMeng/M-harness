@@ -14,6 +14,20 @@ internal sealed class ServerProcess : IDisposable
 
     public int Port { get; }
     public string Token { get; }
+    public bool HasExited
+    {
+        get
+        {
+            try
+            {
+                return process.HasExited;
+            }
+            catch
+            {
+                return true;
+            }
+        }
+    }
 
     private ServerProcess(Process process, int port, string token)
     {
