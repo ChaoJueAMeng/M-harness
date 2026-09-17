@@ -1,5 +1,6 @@
 package com.mharness.checkpoint;
 
+import com.mharness.config.HarnessConfig;
 import com.mharness.workspace.WorkspaceGuard;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.dircache.DirCache;
@@ -11,6 +12,7 @@ import org.eclipse.jgit.lib.Constants;
 import org.eclipse.jgit.lib.FileMode;
 import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.ObjectInserter;
+import org.eclipse.jgit.lib.ObjectLoader;
 import org.eclipse.jgit.lib.PersonIdent;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.RefUpdate;
@@ -20,13 +22,17 @@ import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.treewalk.TreeWalk;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -34,7 +40,8 @@ import java.util.UUID;
 /**
  * 用独立 git ref 保存工作区快照，而不是 git stash 或 reset。
  * 快照写在 {@code refs/m-harness/checkpoints/<id>}，包含当时磁盘上的文件（跳过 .git / target / node_modules）。
- * 任务成功删除 ref；失败或手动 rollback 时 checkout 快照并删掉其后新建的文件。
+ * 工作区已有 {@code .git} 时写入用户仓库；否则写入配置目录下的 sidecar 裸仓库，不在用户目录初始化 git。
+ * 任务成功删除 ref；失败或手动 rollback 时恢复快照并删掉其后新建的文件。
  */
 public final class CheckpointService {
     /** checkpoint ref 的命名前缀，避免污染用户自己的分支。 */
@@ -47,17 +54,15 @@ public final class CheckpointService {
 
     /**
      * 扫描工作区、写入 snapshot commit，并把 ref 指过去。
-     * 要求工作区已经是 git 仓库；不会改 HEAD、不会 reset 工作区。
+     * 不会改用户仓库的 HEAD，也不会 reset 工作区。
      */
     public Checkpoint create() {
-        Path gitDir = guard.workspace().resolve(".git");
-        if (!Files.exists(gitDir)) {
-            throw new CheckpointException("工作区不是 git 仓库");
-        }
-        try (Git git = Git.open(guard.workspace().toFile())) {
-            // 先读一次 status，确保仓库可读，顺带让 jgit 刷新索引状态。
-            git.status().call();
+        try (Git git = openCheckpointGit(true)) {
             Repository repo = git.getRepository();
+            if (hasUserGit()) {
+                // 先读一次 status，确保仓库可读，顺带让 jgit 刷新索引状态。
+                git.status().call();
+            }
             String id = UUID.randomUUID().toString().substring(0, 8);
             ObjectId head = repo.resolve(Constants.HEAD);
             String base = head == null ? null : head.name();
@@ -88,7 +93,10 @@ public final class CheckpointService {
 
     /** 按 id 删除 {@code refs/m-harness/checkpoints/<id>}。 */
     public void delete(String checkpointId) {
-        try (Git git = Git.open(guard.workspace().toFile())) {
+        try (Git git = openCheckpointGit(false)) {
+            if (git == null) {
+                return;
+            }
             RefUpdate update = git.getRepository().updateRef(REF_PREFIX + checkpointId);
             update.setForceUpdate(true);
             update.delete();
@@ -99,14 +107,13 @@ public final class CheckpointService {
 
     /**
      * 读取当前仓库里「最后一个」checkpoint ref。
-     * 不是 git 仓库或没有快照时返回 null。
+     * 没有 sidecar / 用户仓库或没有快照时返回 null。
      */
     public Checkpoint current() {
-        Path gitDir = guard.workspace().resolve(".git");
-        if (!Files.exists(gitDir)) {
-            return null;
-        }
-        try (Git git = Git.open(guard.workspace().toFile())) {
+        try (Git git = openCheckpointGit(false)) {
+            if (git == null) {
+                return null;
+            }
             List<Ref> refs = git.getRepository().getRefDatabase().getRefsByPrefix(REF_PREFIX);
             if (refs.isEmpty()) {
                 return null;
@@ -130,7 +137,7 @@ public final class CheckpointService {
     /**
      * 把工作区强制恢复到快照内容。
      * checkpoint 为 null 时回滚「当前」快照；没有快照则抛错。
-     * 除 checkout 外还会删除快照里不存在、之后新建的文件。
+     * 除恢复快照文件外还会删除快照里不存在、之后新建的文件。
      */
     public void rollback(Checkpoint checkpoint) {
         if (checkpoint == null) {
@@ -141,7 +148,10 @@ public final class CheckpointService {
             rollback(current);
             return;
         }
-        try (Git git = Git.open(guard.workspace().toFile())) {
+        try (Git git = openCheckpointGit(false)) {
+            if (git == null) {
+                throw new CheckpointException("找不到 snapshot: " + checkpoint.checkpointId());
+            }
             Repository repo = git.getRepository();
             ObjectId snapshot = repo.resolve(checkpoint.snapshotCommit());
             if (snapshot == null) {
@@ -151,18 +161,66 @@ public final class CheckpointService {
                 throw new CheckpointException("找不到 snapshot: " + checkpoint.checkpointId());
             }
             Set<String> snapshotPaths = listTree(repo, snapshot);
-            // 强制把已跟踪路径恢复到快照内容。
-            git.checkout()
-                    .setStartPoint(snapshot.name())
-                    .setAllPaths(true)
-                    .setForced(true)
-                    .call();
-            // checkout 不会删掉快照之后新建的文件，需要再扫一遍磁盘。
+            if (hasUserGit()) {
+                // 强制把已跟踪路径恢复到快照内容。
+                git.checkout()
+                        .setStartPoint(snapshot.name())
+                        .setAllPaths(true)
+                        .setForced(true)
+                        .call();
+            } else {
+                // sidecar 是裸仓库，不能 checkout 到用户目录；按 tree 把 blob 写回工作区。
+                restoreSnapshotFiles(repo, snapshot);
+            }
+            // checkout / 写回都不会删掉快照之后新建的文件，需要再扫一遍磁盘。
             deleteExtras(snapshotPaths);
         } catch (CheckpointException e) {
             throw e;
         } catch (Exception e) {
             throw new CheckpointException("回滚失败", e);
+        }
+    }
+
+    /** 工作区是否自带 git 仓库（含 {@code .git} 文件或目录）。 */
+    boolean hasUserGit() {
+        return Files.exists(guard.workspace().resolve(".git"));
+    }
+
+    /** sidecar 裸仓库目录：{@code ~/.m-harness/checkpoints/<workspacePathSha256>}。 */
+    Path sidecarGitDir() {
+        return HarnessConfig.globalConfigDir().resolve("checkpoints").resolve(workspaceKey(guard.workspace()));
+    }
+
+    /**
+     * 打开 checkpoint 所用的 Git：用户仓库或 sidecar。
+     * {@code createSidecar} 为 false 且 sidecar 不存在时返回 null。
+     */
+    private Git openCheckpointGit(boolean createSidecar) throws Exception {
+        if (hasUserGit()) {
+            return Git.open(guard.workspace().toFile());
+        }
+        Path gitDir = sidecarGitDir();
+        boolean exists = Files.exists(gitDir.resolve("HEAD")) || Files.exists(gitDir.resolve("objects"));
+        if (!exists) {
+            if (!createSidecar) {
+                return null;
+            }
+            Files.createDirectories(gitDir);
+            try (Git created = Git.init().setDirectory(gitDir.toFile()).setBare(true).call()) {
+                created.getRepository().getConfig().unset("core", null, "worktree");
+                created.getRepository().getConfig().save();
+            }
+        }
+        return Git.open(gitDir.toFile());
+    }
+
+    static String workspaceKey(Path workspace) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(workspace.toAbsolutePath().normalize().toString().getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 不可用", e);
         }
     }
 
@@ -217,6 +275,28 @@ public final class CheckpointService {
             ObjectId commitId = inserter.insert(commit);
             inserter.flush();
             return commitId;
+        }
+    }
+
+    /** 把 snapshot commit 的文件写回工作区，不通过 git checkout，避免 sidecar 在用户目录留下 .git。 */
+    private void restoreSnapshotFiles(Repository repo, ObjectId snapshot) throws IOException {
+        Path root = guard.workspace();
+        try (RevWalk revWalk = new RevWalk(repo); TreeWalk treeWalk = new TreeWalk(repo)) {
+            RevCommit commit = revWalk.parseCommit(snapshot);
+            treeWalk.addTree(commit.getTree());
+            treeWalk.setRecursive(true);
+            while (treeWalk.next()) {
+                Path target = root.resolve(treeWalk.getPathString()).normalize();
+                if (!target.startsWith(root)) {
+                    continue;
+                }
+                Path parent = target.getParent();
+                if (parent != null) {
+                    Files.createDirectories(parent);
+                }
+                ObjectLoader loader = repo.open(treeWalk.getObjectId(0));
+                Files.write(target, loader.getBytes());
+            }
         }
     }
 
