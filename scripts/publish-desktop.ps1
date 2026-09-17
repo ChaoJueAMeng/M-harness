@@ -4,7 +4,7 @@
     打包 WinUI 桌面端：自包含 .NET、server jar、jlink JRE，并可选生成 Setup.exe。
 
 .DESCRIPTION
-    不要用 MSIX：Agent 要在用户任选的 git 仓库里读写文件、跑 Shell，沙箱会拦住 Java 子进程。
+    不要用 MSIX：Agent 要在用户任选的目录里读写文件、跑 Shell，沙箱会拦住 Java 子进程。
     本脚本产出绿色 zip；若已安装 Inno Setup 6，再编译成每用户安装包。
 
 .PARAMETER SkipJre
@@ -200,5 +200,5 @@ if ($setup -and (Test-Path $setup)) {
     Write-Host "  安装包:     $setup"
 }
 Write-Host ""
-Write-Host "安装后从开始菜单打开即可，不必再装 JDK / .NET SDK。"
-Write-Host "Agent 模式仍需要本机 Git（工作区必须是 git 仓库）。"
+Write-Host "安装后从开始菜单打开即可，不必再装 JDK / .NET SDK / Git。"
+Write-Host "工作区不必是 git 仓库；未绑定目录时使用临时码本。"
