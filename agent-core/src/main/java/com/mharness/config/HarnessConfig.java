@@ -61,6 +61,26 @@ public final class HarnessConfig {
         return globalConfigDir().resolve(".env");
     }
 
+    /** 未绑定工作区时桌面端使用的临时码本根目录 {@code ~/.m-harness/scratch}。 */
+    public static Path scratchRoot() {
+        return globalConfigDir().resolve("scratch");
+    }
+
+    /** 某条对话对应的临时码本目录。 */
+    public static Path scratchWorkspace(String conversationId) {
+        return scratchRoot().resolve(conversationId);
+    }
+
+    /** 工作区是否位于临时码本根目录下（未绑定真实项目）。 */
+    public static boolean isScratchWorkspace(Path workspace) {
+        if (workspace == null) {
+            return false;
+        }
+        Path root = scratchRoot().toAbsolutePath().normalize();
+        Path cwd = workspace.toAbsolutePath().normalize();
+        return cwd.startsWith(root);
+    }
+
     /**
      * 从全局配置、工作区与当前目录的 {@code .env} 以及环境变量组装配置。
      * 先读到的文件优先生效（{@code putIfAbsent}），因此全局配置覆盖工作区 .env。

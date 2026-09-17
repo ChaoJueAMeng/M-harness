@@ -1,6 +1,7 @@
 package com.mharness.context;
 
 import com.mharness.agent.AgentLimits;
+import com.mharness.config.HarnessConfig;
 import com.mharness.llm.ChatTurn;
 import com.mharness.permission.PermissionMode;
 import com.mharness.workspace.WorkspaceGuard;
@@ -104,10 +105,13 @@ public final class ContextPacker {
                 """.formatted(mode, dryRun, workspaceInfo(), agentsMd(), fileTree());
     }
 
-    /** cwd、当前分支、git status；不是 git 仓库时标明。 */
+    /** cwd、当前分支、git status；不是 git 仓库时标明。临时码本会额外说明。 */
     private String workspaceInfo() {
         StringBuilder sb = new StringBuilder();
         sb.append("cwd: ").append(guard.workspace()).append('\n');
+        if (HarnessConfig.isScratchWorkspace(guard.workspace())) {
+            sb.append("scratch: this is a temporary notebook under the M Bot config directory, not a user project.\n");
+        }
         Path gitDir = guard.workspace().resolve(".git");
         if (!Files.exists(gitDir)) {
             sb.append("git: (not a git repository)\n");

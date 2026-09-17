@@ -89,4 +89,12 @@ class HarnessConfigTest {
         assertThat(nested.resolve(".env")).exists();
         assertThat(HarnessConfig.load(null).apiKey()).isEqualTo("sk-dir");
     }
+
+    @Test
+    void detectsScratchWorkspaceUnderConfigDir() {
+        Path scratch = HarnessConfig.scratchWorkspace("conv-1");
+        assertThat(HarnessConfig.isScratchWorkspace(scratch)).isTrue();
+        assertThat(HarnessConfig.isScratchWorkspace(workspace)).isFalse();
+        assertThat(HarnessConfig.isScratchWorkspace(null)).isFalse();
+    }
 }
