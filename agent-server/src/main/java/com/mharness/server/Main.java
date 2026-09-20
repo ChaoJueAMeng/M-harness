@@ -1,6 +1,7 @@
 package com.mharness.server;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.mharness.config.HarnessLog;
 
 import java.security.SecureRandom;
 import java.util.HexFormat;
@@ -33,6 +34,7 @@ public final class Main {
             ));
             System.out.println(ready);
             System.out.flush();
+            HarnessLog.info("本机服务已启动 port=" + server.port());
             // 一直阻塞主线程；窗口关闭时桌面会杀掉本进程。
             Thread.currentThread().join();
         }

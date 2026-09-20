@@ -38,6 +38,8 @@ class HarnessHttpServerTest {
     void start() throws Exception {
         System.setProperty(HarnessConfig.CONFIG_DIR_PROPERTY, configDir.toString());
         server = HarnessHttpServer.start("127.0.0.1", 0, "test-token");
+        server.setRunChatClientFactory((config, listener) -> (turns, tools) ->
+                new com.mharness.llm.LlmResponse("ok", java.util.List.of()));
         client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
         base = "http://127.0.0.1:" + server.port();
     }
@@ -228,6 +230,34 @@ class HarnessHttpServerTest {
         );
         assertThat(response.statusCode()).isEqualTo(502);
         assertThat(response.body()).contains("调用模型失败");
+    }
+
+    @Test
+    void rollbackConflictsWithActiveRun(@TempDir Path workspace) throws Exception {
+        saveSettings();
+        server.setRunChatClientFactory((config, listener) -> (turns, tools) -> {
+            try {
+                Thread.sleep(1500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return new com.mharness.llm.LlmResponse("ok", java.util.List.of());
+        });
+        HttpResponse<String> run = client.send(
+                request("POST", "/v1/run", MAPPER.writeValueAsString(Map.of(
+                        "workspace", workspace.toString(),
+                        "prompt", "hello",
+                        "mode", "ASK"
+                ))),
+                HttpResponse.BodyHandlers.ofString()
+        );
+        assertThat(run.statusCode()).isEqualTo(200);
+        HttpResponse<String> rollback = client.send(
+                request("POST", "/v1/rollback", MAPPER.writeValueAsString(Map.of("workspace", workspace.toString()))),
+                HttpResponse.BodyHandlers.ofString()
+        );
+        assertThat(rollback.statusCode()).isEqualTo(409);
+        assertThat(rollback.body()).contains("任务在运行");
     }
 
     @Test

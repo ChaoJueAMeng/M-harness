@@ -9,10 +9,13 @@ import com.mharness.agent.AgentRuntime;
 import com.mharness.checkpoint.Checkpoint;
 import com.mharness.checkpoint.CheckpointException;
 import com.mharness.config.HarnessConfig;
+import com.mharness.agent.AgentObserver;
+import com.mharness.config.HarnessLog;
 import com.mharness.llm.ChatClient;
 import com.mharness.llm.ChatTurn;
 import com.mharness.llm.OpenAiCompatibleChatClient;
 import com.mharness.llm.TitleGenerator;
+import com.mharness.llm.TokenListener;
 import com.mharness.permission.ApprovalService;
 import com.mharness.permission.AutoApprovalService;
 import com.mharness.permission.PermissionMode;
@@ -56,6 +59,9 @@ public final class HarnessHttpServer implements AutoCloseable {
     /** 标题接口用的 ChatClient；测试可替换，避免打真实模型。 */
     private volatile Function<HarnessConfig, ChatClient> titleClients = config ->
             new OpenAiCompatibleChatClient(config.baseUrl(), config.apiKey(), config.model(), ignored -> {});
+    /** 主任务用的 ChatClient；测试可替换，避免 /v1/run 真的去连模型。 */
+    private volatile RunClientFactory runClients = (config, listener) ->
+            new OpenAiCompatibleChatClient(config.baseUrl(), config.apiKey(), config.model(), listener);
 
     private HarnessHttpServer(HttpServer http, String token) {
         this.http = http;
@@ -200,19 +206,28 @@ public final class HarnessHttpServer implements AutoCloseable {
         HttpApprovalService httpApprovals = new HttpApprovalService(events, mapper);
         ApprovalService approvals = autoApprove ? new AutoApprovalService(true) : httpApprovals;
         AgentRuntime runtime = new AgentRuntime(workspace);
+        TokenListener tokens = token -> emit(events, tokenEvent(token));
+        AgentObserver observer = new AgentObserver() {
+            @Override
+            public void onTool(String toolName, String status, int chars) {
+                emit(events, toolEvent(toolName, status, chars));
+            }
+
+            @Override
+            public void onUsage(Integer inputTokens, Integer outputTokens) {
+                emit(events, usageEvent(inputTokens, outputTokens));
+            }
+        };
         AgentLoop loop = runtime.createLoop(
-                config.baseUrl(),
-                config.apiKey(),
-                config.model(),
+                runClients.create(config, tokens),
                 mode,
                 dryRun,
                 autoApprove,
                 approvals,
-                token -> emit(events, tokenEvent(token)),
-                (toolName, status, chars) -> emit(events, toolEvent(toolName, status, chars))
+                observer
         );
         String runId = UUID.randomUUID().toString();
-        ActiveRun run = new ActiveRun(runId, loop, httpApprovals, events);
+        ActiveRun run = new ActiveRun(runId, workspace, loop, httpApprovals, events);
         synchronized (lock) {
             if (active != null && !active.finished) {
                 sendJson(exchange, 409, Map.of("error", "已有任务在运行"));
@@ -301,6 +316,10 @@ public final class HarnessHttpServer implements AutoCloseable {
             sendJson(exchange, 400, Map.of("error", e.getMessage()));
             return;
         }
+        if (busyWorkspace(workspace)) {
+            sendJson(exchange, 409, Map.of("error", "该工作区有任务在运行"));
+            return;
+        }
         try {
             Checkpoint current = new AgentRuntime(workspace).checkpoints().current();
             Map<String, Object> response = new LinkedHashMap<>();
@@ -320,6 +339,10 @@ public final class HarnessHttpServer implements AutoCloseable {
             workspace = requireWorkspace(text(body, "workspace"));
         } catch (IllegalArgumentException e) {
             sendJson(exchange, 400, Map.of("error", e.getMessage()));
+            return;
+        }
+        if (busyWorkspace(workspace)) {
+            sendJson(exchange, 409, Map.of("error", "该工作区有任务在运行，不能回滚"));
             return;
         }
         try {
@@ -384,6 +407,22 @@ public final class HarnessHttpServer implements AutoCloseable {
         this.titleClients = Objects.requireNonNull(factory);
     }
 
+    /** 测试替换主任务所用 ChatClient，避免 /v1/run 去连真实模型。 */
+    void setRunChatClientFactory(RunClientFactory factory) {
+        this.runClients = Objects.requireNonNull(factory);
+    }
+
+    @FunctionalInterface
+    interface RunClientFactory {
+        ChatClient create(HarnessConfig config, TokenListener listener);
+    }
+
+    private boolean busyWorkspace(Path workspace) {
+        synchronized (lock) {
+            return active != null && !active.finished && active.workspace.equals(workspace);
+        }
+    }
+
     /** 只认当前这一个 active runId。 */
     private ActiveRun requireRun(String runId) {
         synchronized (lock) {
@@ -435,6 +474,22 @@ public final class HarnessHttpServer implements AutoCloseable {
         ObjectNode node = mapper.createObjectNode();
         node.put("type", "token");
         node.put("text", tokenText == null ? "" : tokenText);
+        return node;
+    }
+
+    private ObjectNode usageEvent(Integer inputTokens, Integer outputTokens) {
+        ObjectNode node = mapper.createObjectNode();
+        node.put("type", "usage");
+        if (inputTokens == null) {
+            node.putNull("inputTokens");
+        } else {
+            node.put("inputTokens", inputTokens);
+        }
+        if (outputTokens == null) {
+            node.putNull("outputTokens");
+        } else {
+            node.put("outputTokens", outputTokens);
+        }
         return node;
     }
 
@@ -573,13 +628,15 @@ public final class HarnessHttpServer implements AutoCloseable {
     /** 当前正在跑（或刚结束、仍可拉 SSE）的一次任务。 */
     private static final class ActiveRun {
         final String id;
+        final Path workspace;
         final AgentLoop loop;
         final HttpApprovalService approvals;
         final EventLog events;
         volatile boolean finished;
 
-        ActiveRun(String id, AgentLoop loop, HttpApprovalService approvals, EventLog events) {
+        ActiveRun(String id, Path workspace, AgentLoop loop, HttpApprovalService approvals, EventLog events) {
             this.id = id;
+            this.workspace = workspace;
             this.loop = loop;
             this.approvals = approvals;
             this.events = events;
