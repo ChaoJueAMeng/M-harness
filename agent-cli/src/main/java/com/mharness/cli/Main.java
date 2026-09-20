@@ -5,6 +5,7 @@ import com.mharness.agent.AgentOutcome;
 import com.mharness.agent.AgentRuntime;
 import com.mharness.checkpoint.Checkpoint;
 import com.mharness.config.HarnessConfig;
+import com.mharness.config.HarnessVersion;
 import com.mharness.permission.ApprovalService;
 import com.mharness.permission.AutoApprovalService;
 import com.mharness.permission.ConsoleApprovalService;
@@ -25,7 +26,7 @@ import java.util.concurrent.Callable;
 @Command(
         name = "m-harness",
         mixinStandardHelpOptions = true,
-        version = "0.1.0",
+        version = HarnessVersion.CURRENT,
         description = "安全优先、可回滚的 Java Coding Agent Runtime",
         subcommands = {
                 Main.AskCommand.class,
