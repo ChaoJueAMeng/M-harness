@@ -2,6 +2,7 @@ package com.mharness.checkpoint;
 
 import com.mharness.config.HarnessConfig;
 import com.mharness.workspace.WorkspaceGuard;
+import com.mharness.workspace.WorkspaceIgnore;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.dircache.DirCache;
 import org.eclipse.jgit.errors.RepositoryNotFoundException;
@@ -31,6 +32,9 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
@@ -46,15 +50,19 @@ import java.util.UUID;
 public final class CheckpointService {
     /** checkpoint ref 的命名前缀，避免污染用户自己的分支。 */
     public static final String REF_PREFIX = "refs/m-harness/checkpoints/";
+    /** 每个工作区最多保留的 checkpoint 数；步数上限 / 取消 / 失败都会留下 ref，需要有上界。 */
+    public static final int MAX_RETAINED = 20;
     private final WorkspaceGuard guard;
+    private final WorkspaceIgnore ignore;
 
     public CheckpointService(WorkspaceGuard guard) {
         this.guard = guard;
+        this.ignore = WorkspaceIgnore.of(guard.workspace());
     }
 
     /**
      * 扫描工作区、写入 snapshot commit，并把 ref 指过去。
-     * 不会改用户仓库的 HEAD，也不会 reset 工作区。
+     * 不会改用户仓库的 HEAD，也不会 reset 工作区。写入后裁掉超出 {@link #MAX_RETAINED} 的旧快照。
      */
     public Checkpoint create() {
         try (Git git = openCheckpointGit(true)) {
@@ -63,11 +71,12 @@ public final class CheckpointService {
                 // 先读一次 status，确保仓库可读，顺带让 jgit 刷新索引状态。
                 git.status().call();
             }
-            String id = UUID.randomUUID().toString().substring(0, 8);
+            Instant now = Instant.now();
+            String id = newCheckpointId(now);
             ObjectId head = repo.resolve(Constants.HEAD);
             String base = head == null ? null : head.name();
             // 把当前磁盘文件打成一棵独立 tree/commit，不经过用户 index。
-            ObjectId snapshot = writeSnapshotCommit(repo, head, id);
+            ObjectId snapshot = writeSnapshotCommit(repo, head, id, now);
             RefUpdate update = repo.updateRef(REF_PREFIX + id);
             update.setNewObjectId(snapshot);
             update.setRefLogMessage("m-harness checkpoint", false);
@@ -75,12 +84,22 @@ public final class CheckpointService {
             if (result != RefUpdate.Result.NEW && result != RefUpdate.Result.FAST_FORWARD) {
                 throw new CheckpointException("无法写入 checkpoint ref: " + result);
             }
-            return new Checkpoint(id, base, snapshot.name(), Instant.now(), guard.workspace());
+            pruneOld(repo, id);
+            return new Checkpoint(id, base, snapshot.name(), now, guard.workspace());
         } catch (CheckpointException e) {
             throw e;
         } catch (Exception e) {
             throw new CheckpointException("创建 checkpoint 失败", e);
         }
+    }
+
+    /**
+     * id 形如 {@code <毫秒时间戳 11 位十六进制>-<4 位随机>}：定宽时间前缀让 ref 名的字典序就是创建顺序，
+     * 与 {@link #current()} 按 commit 时间排序互为兜底。
+     */
+    static String newCheckpointId(Instant when) {
+        String random = UUID.randomUUID().toString().replace("-", "").substring(0, 4);
+        return String.format("%011x-%s", when.toEpochMilli(), random);
     }
 
     /** 删除指定 checkpoint 的 ref；null 时什么也不做。 */
@@ -106,7 +125,8 @@ public final class CheckpointService {
     }
 
     /**
-     * 读取当前仓库里「最后一个」checkpoint ref。
+     * 读取当前仓库里「最近创建」的 checkpoint。
+     * 按 snapshot commit 的提交时间排序，同一秒内再按 ref 名（带时间前缀）排序，而不是只看 ref 名字典序。
      * 没有 sidecar / 用户仓库或没有快照时返回 null。
      */
     public Checkpoint current() {
@@ -114,23 +134,53 @@ public final class CheckpointService {
             if (git == null) {
                 return null;
             }
-            List<Ref> refs = git.getRepository().getRefDatabase().getRefsByPrefix(REF_PREFIX);
-            if (refs.isEmpty()) {
-                return null;
-            }
-            Ref latest = refs.getLast();
-            String id = latest.getName().substring(REF_PREFIX.length());
-            try (RevWalk walk = new RevWalk(git.getRepository())) {
-                RevCommit commit = walk.parseCommit(latest.getObjectId());
-                String base = commit.getParentCount() > 0 ? commit.getParent(0).name() : null;
-                return new Checkpoint(id, base, commit.name(), Instant.ofEpochSecond(commit.getCommitTime()), guard.workspace());
-            }
+            List<Checkpoint> all = listCheckpoints(git.getRepository());
+            return all.isEmpty() ? null : all.getFirst();
         } catch (RepositoryNotFoundException e) {
             return null;
         } catch (CheckpointException e) {
             throw e;
         } catch (Exception e) {
             throw new CheckpointException("读取 checkpoint 失败", e);
+        }
+    }
+
+    /** 全部 checkpoint，新的在前。解析失败的 ref 直接跳过。 */
+    private List<Checkpoint> listCheckpoints(Repository repo) throws IOException {
+        List<Ref> refs = repo.getRefDatabase().getRefsByPrefix(REF_PREFIX);
+        List<Checkpoint> result = new ArrayList<>();
+        try (RevWalk walk = new RevWalk(repo)) {
+            for (Ref ref : refs) {
+                String id = ref.getName().substring(REF_PREFIX.length());
+                try {
+                    RevCommit commit = walk.parseCommit(ref.getObjectId());
+                    String base = commit.getParentCount() > 0 ? commit.getParent(0).name() : null;
+                    Instant when = commit.getCommitterIdent() == null
+                            ? Instant.ofEpochSecond(commit.getCommitTime())
+                            : commit.getCommitterIdent().getWhenAsInstant();
+                    result.add(new Checkpoint(id, base, commit.name(), when, guard.workspace()));
+                } catch (IOException ignored) {
+                    // dangling or corrupt ref
+                }
+            }
+        }
+        result.sort(Comparator.comparing(Checkpoint::createdAt)
+                .thenComparing(Checkpoint::checkpointId)
+                .reversed());
+        return result;
+    }
+
+    /** 只保留最近 {@link #MAX_RETAINED} 个 checkpoint；刚创建的那个永远保留。 */
+    private void pruneOld(Repository repo, String keepId) throws IOException {
+        List<Checkpoint> all = listCheckpoints(repo);
+        for (int i = MAX_RETAINED; i < all.size(); i++) {
+            Checkpoint stale = all.get(i);
+            if (stale.checkpointId().equals(keepId)) {
+                continue;
+            }
+            RefUpdate update = repo.updateRef(REF_PREFIX + stale.checkpointId());
+            update.setForceUpdate(true);
+            update.delete();
         }
     }
 
@@ -228,7 +278,7 @@ public final class CheckpointService {
      * 遍历工作区文件，写入 in-memory index，再生成 tree + commit。
      * 父提交为当时 HEAD，方便从 snapshot 看出基于哪次提交。
      */
-    private ObjectId writeSnapshotCommit(Repository repo, ObjectId parent, String id) throws IOException {
+    private ObjectId writeSnapshotCommit(Repository repo, ObjectId parent, String id, Instant when) throws IOException {
         try (ObjectInserter inserter = repo.newObjectInserter()) {
             DirCache index = DirCache.newInCore();
             DirCacheBuilder builder = index.builder();
@@ -236,19 +286,12 @@ public final class CheckpointService {
             Files.walkFileTree(root, new SimpleFileVisitor<>() {
                 @Override
                 public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                    String name = dir.getFileName() == null ? "" : dir.getFileName().toString();
-                    if (dir.equals(root)) {
-                        return FileVisitResult.CONTINUE;
-                    }
-                    if (name.equals(".git") || name.equals("target") || name.equals("node_modules")) {
-                        return FileVisitResult.SKIP_SUBTREE;
-                    }
-                    return FileVisitResult.CONTINUE;
+                    return enterDirectory(root, dir);
                 }
 
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                    if (Files.isSymbolicLink(file)) {
+                    if (WorkspaceIgnore.skipSnapshotFile(file, attrs)) {
                         return FileVisitResult.CONTINUE;
                     }
                     String relative = root.relativize(file).toString().replace('\\', '/');
@@ -268,7 +311,7 @@ public final class CheckpointService {
             if (parent != null) {
                 commit.setParentId(parent);
             }
-            PersonIdent ident = new PersonIdent("m-harness", "m-harness@local");
+            PersonIdent ident = new PersonIdent("m-harness", "m-harness@local", when, ZoneOffset.UTC);
             commit.setAuthor(ident);
             commit.setCommitter(ident);
             commit.setMessage("m-harness checkpoint " + id);
@@ -314,30 +357,56 @@ public final class CheckpointService {
         return paths;
     }
 
-    /** 删除工作区里存在、但快照树中没有的普通文件（跳过 .git）。 */
+    /**
+     * 删除工作区里存在、但快照树中没有的普通文件。
+     * 必须与 {@link #writeSnapshotCommit} 使用同一份跳过规则：快照没拍的 {@code target} / {@code node_modules}
+     * 和符号链接，这里也不能碰，否则回滚会把用户的依赖目录和链接当成「Agent 新建的文件」删掉。
+     */
     private void deleteExtras(Set<String> snapshotPaths) throws IOException {
         Path root = guard.workspace();
         Files.walkFileTree(root, new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                String name = dir.getFileName() == null ? "" : dir.getFileName().toString();
-                if (dir.equals(root)) {
-                    return FileVisitResult.CONTINUE;
-                }
-                if (name.equals(".git")) {
-                    return FileVisitResult.SKIP_SUBTREE;
-                }
-                return FileVisitResult.CONTINUE;
+                return enterDirectory(root, dir);
             }
 
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                if (WorkspaceIgnore.skipSnapshotFile(file, attrs)) {
+                    return FileVisitResult.CONTINUE;
+                }
                 String relative = root.relativize(file).toString().replace('\\', '/');
                 if (!snapshotPaths.contains(relative)) {
                     Files.deleteIfExists(file);
                 }
                 return FileVisitResult.CONTINUE;
             }
+
+            @Override
+            public FileVisitResult visitFileFailed(Path file, IOException exc) {
+                return FileVisitResult.CONTINUE;
+            }
         });
+    }
+
+    /**
+     * 快照与回滚共用的目录准入：跳过 {@link WorkspaceIgnore} 名单，以及 realpath 已逃出工作区的目录
+     * （Windows junction 在 Java 里表现为普通目录，不加这一层会顺着它走到仓库外面去读写）。
+     */
+    private FileVisitResult enterDirectory(Path root, Path dir) {
+        if (dir.equals(root)) {
+            return FileVisitResult.CONTINUE;
+        }
+        if (ignore.skipDirectory(dir)) {
+            return FileVisitResult.SKIP_SUBTREE;
+        }
+        try {
+            if (!dir.toRealPath().startsWith(root)) {
+                return FileVisitResult.SKIP_SUBTREE;
+            }
+        } catch (IOException e) {
+            return FileVisitResult.SKIP_SUBTREE;
+        }
+        return FileVisitResult.CONTINUE;
     }
 }
