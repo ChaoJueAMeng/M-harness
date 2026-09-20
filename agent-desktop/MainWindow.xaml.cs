@@ -34,6 +34,9 @@ public sealed partial class MainWindow : Window
     private bool sidebarReady;
     private bool promptComposing;
     private Task? serverStartTask;
+    private DateTimeOffset lastServerStart;
+    private int rapidServerExits;
+    private readonly System.Text.StringBuilder streamingText = new();
 
     public MainWindow()
     {
@@ -45,7 +48,7 @@ public sealed partial class MainWindow : Window
             PromptBox.AddHandler(UIElement.PreviewKeyDownEvent, new KeyEventHandler(PromptBox_PreviewKeyDown), handledEventsToo: true);
             PromptBox.TextCompositionStarted += PromptBox_TextCompositionStarted;
             PromptBox.TextCompositionEnded += PromptBox_TextCompositionEnded;
-            Title = "M Bot";
+            Title = "Meng Bot";
             MaximizeOnLaunch();
             string icon = Path.Combine(AppContext.BaseDirectory, "Assets", "app.ico");
             if (File.Exists(icon))
@@ -166,13 +169,17 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 已有客户端则跳过；启动中则等待；失败后允许再试一次。
+    /// 服务健在则直接返回；Java 子进程已退出则丢掉旧客户端重新拉起；启动中则等待同一个任务。
     /// </summary>
     private Task EnsureServerStartedAsync()
     {
-        if (client != null)
+        if (client != null && server != null && !server.HasExited)
         {
             return Task.CompletedTask;
+        }
+        if (server != null && server.HasExited)
+        {
+            DropDeadServer();
         }
         if (serverStartTask == null || serverStartTask.IsCompleted)
         {
@@ -191,8 +198,11 @@ public sealed partial class MainWindow : Window
             SetStatus("正在启动本地服务…");
             if (server == null || server.HasExited)
             {
-                server?.Dispose();
-                server = await Task.Run(ServerProcess.Start).ConfigureAwait(false);
+                DropDeadServer();
+                ServerProcess started = await Task.Run(ServerProcess.Start).ConfigureAwait(false);
+                started.Exited += OnServerExited;
+                server = started;
+                lastServerStart = DateTimeOffset.UtcNow;
             }
             var api = new AgentApiClient(server.Port, server.Token);
             bool ok = await api.HealthAsync(CancellationToken.None).ConfigureAwait(false);
@@ -206,6 +216,49 @@ public sealed partial class MainWindow : Window
             SetStatus("启动失败：" + ex.Message);
         }
         UpdateSendEnabled();
+    }
+
+    /// <summary>
+    /// 释放已退出的 Java 进程及其客户端，让下一次 <see cref="EnsureServerStartedAsync"/> 重新拉起。
+    /// </summary>
+    private void DropDeadServer()
+    {
+        if (server != null)
+        {
+            server.Exited -= OnServerExited;
+            server.Dispose();
+            server = null;
+        }
+        client?.Dispose();
+        client = null;
+    }
+
+    /// <summary>
+    /// Java 子进程意外退出（线程池线程）：切回 UI 线程，释放旧进程并立刻重启。
+    /// 启动后 30 秒内连续退出两次视为环境问题，停止自动重启，留给用户点「发送」手动重试。
+    /// </summary>
+    private void OnServerExited(int? exitCode)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (server == null || !server.HasExited)
+            {
+                return;
+            }
+            string code = exitCode is int c ? "（退出码 " + c + "）" : "";
+            CrashLog.Write("ServerExited", new InvalidOperationException("Java 服务退出" + code));
+            bool rapid = DateTimeOffset.UtcNow - lastServerStart < TimeSpan.FromSeconds(30);
+            rapidServerExits = rapid ? rapidServerExits + 1 : 0;
+            DropDeadServer();
+            UpdateSendEnabled();
+            if (rapidServerExits >= 2)
+            {
+                SetStatus("本地服务连续退出" + code + "，已停止自动重启；点「发送」可再试");
+                return;
+            }
+            SetStatus("本地服务已退出" + code + "，正在重启…");
+            _ = KickoffServerAsync();
+        });
     }
 
     /// <summary>
@@ -742,6 +795,11 @@ public sealed partial class MainWindow : Window
             }
         }
         streamingMarkdown = lastAssistant;
+        streamingText.Clear();
+        if (lastAssistant != null)
+        {
+            streamingText.Append(LastAssistantText());
+        }
         ScrollToEnd(TranscriptScroll);
     }
 
@@ -897,10 +955,12 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private async void Send_Click(object sender, RoutedEventArgs e)
     {
-        if (client == null)
+        if (running)
         {
-            await EnsureServerStartedAsync();
+            return;
         }
+        // 服务健在时是同步返回；子进程已退出时会在这里重新拉起。
+        await EnsureServerStartedAsync();
         if (running || client == null || current == null)
         {
             if (current == null)
@@ -909,7 +969,7 @@ public sealed partial class MainWindow : Window
             }
             else if (client == null)
             {
-                SetStatus("本地服务未就绪，请稍候再发送");
+                SetStatus("本地服务未就绪，请查看状态栏提示后重试");
             }
             return;
         }
@@ -1068,6 +1128,10 @@ public sealed partial class MainWindow : Window
         UpdateSendEnabled();
     }
 
+    /// <summary>
+    /// 发送键只看「有对话且没有任务在跑」。服务未就绪或已退出时点它会走 <see cref="EnsureServerStartedAsync"/> 重启，
+    /// 否则子进程崩溃后用户除了重开应用没有任何恢复入口。
+    /// </summary>
     private void UpdateSendEnabled()
     {
         if (!DispatcherQueue.HasThreadAccess)
@@ -1075,7 +1139,7 @@ public sealed partial class MainWindow : Window
             DispatcherQueue.TryEnqueue(UpdateSendEnabled);
             return;
         }
-        SendButton.IsEnabled = client != null && !running && current != null;
+        SendButton.IsEnabled = !running && current != null;
     }
 
     /// <summary>
@@ -1108,6 +1172,14 @@ public sealed partial class MainWindow : Window
                     await client.ApproveAsync(runId, requestId, approved, cancellationToken);
                 }
                 AppendLog((approved ? "已批准 " : "已拒绝 ") + toolName + "\n");
+                break;
+            case "usage":
+                int inputTokens = evt.TryGetProperty("inputTokens", out var it) && it.ValueKind == JsonValueKind.Number ? it.GetInt32() : 0;
+                int outputTokens = evt.TryGetProperty("outputTokens", out var ot) && ot.ValueKind == JsonValueKind.Number ? ot.GetInt32() : 0;
+                if (inputTokens > 0 || outputTokens > 0)
+                {
+                    AppendLog("用量 in=" + inputTokens + " out=" + outputTokens + "\n");
+                }
                 break;
             case "done":
                 string doneStatus = evt.TryGetProperty("status", out var ds) ? ds.GetString() ?? "" : "";
@@ -1142,16 +1214,22 @@ public sealed partial class MainWindow : Window
 
     private string LastAssistantText()
     {
+        if (streamingText.Length > 0)
+        {
+            return streamingText.ToString();
+        }
         ChatMessage? last = current?.Messages.LastOrDefault(message => message.Role == "assistant");
         return last?.Content ?? "";
     }
 
     private void SetLastAssistant(string text)
     {
+        streamingText.Clear();
+        streamingText.Append(text ?? "");
         ChatMessage? last = current?.Messages.LastOrDefault(message => message.Role == "assistant");
         if (last != null)
         {
-            last.Content = text;
+            last.Content = streamingText.ToString();
         }
         FlushMarkdownRefresh();
     }
@@ -1162,11 +1240,7 @@ public sealed partial class MainWindow : Window
         {
             return;
         }
-        ChatMessage? last = current?.Messages.LastOrDefault(message => message.Role == "assistant");
-        if (last != null)
-        {
-            last.Content += text;
-        }
+        streamingText.Append(text);
         QueueMarkdownRefresh();
     }
 
@@ -1200,19 +1274,28 @@ public sealed partial class MainWindow : Window
 
     private void ApplyStreamingMarkdown()
     {
+        ChatMessage? last = current?.Messages.LastOrDefault(message => message.Role == "assistant");
+        if (last != null)
+        {
+            last.Content = streamingText.ToString();
+        }
         if (streamingMarkdown != null)
         {
-            streamingMarkdown.SetMarkdown(LastAssistantText());
+            streamingMarkdown.SetMarkdown(last?.Content ?? "");
         }
         ScrollToEnd(TranscriptScroll);
     }
 
     private void AppendLog(string text)
     {
-        LogBox.Text += text;
         if (current != null)
         {
-            current.ToolLog += text;
+            current.AppendToolLog(text);
+            LogBox.Text = current.ToolLog;
+        }
+        else
+        {
+            LogBox.Text += text;
         }
         ScrollToEnd(LogScroll);
     }
@@ -1269,6 +1352,7 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private async void Settings_Click(object sender, RoutedEventArgs e)
     {
+        await EnsureServerStartedAsync();
         if (client == null)
         {
             SetStatus("本地服务尚未就绪");
@@ -1352,8 +1436,15 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private async void Rollback_Click(object sender, RoutedEventArgs e)
     {
+        if (running)
+        {
+            SetStatus("任务进行中，不能回滚");
+            return;
+        }
+        await EnsureServerStartedAsync();
         if (client == null)
         {
+            SetStatus("本地服务尚未就绪");
             return;
         }
         string workspace = current == null ? "" : ResolveRunWorkspace(current);

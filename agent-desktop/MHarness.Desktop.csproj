@@ -20,14 +20,20 @@
     <EnableMsixTooling>true</EnableMsixTooling>
     <!-- 关掉 VS 那套 MRT 任务，否则 dotnet build 会找不到 ExpandPriContent -->
     <EnableCoreMrtTooling>false</EnableCoreMrtTooling>
-    <ApplicationTitle>M Bot</ApplicationTitle>
-    <Version>0.1.0</Version>
-    <InformationalVersion>0.1.0</InformationalVersion>
-    <Product>M Bot</Product>
-    <Authors>M Bot</Authors>
+    <ApplicationTitle>Meng Bot</ApplicationTitle>
+    <Version>$([System.IO.File]::ReadAllText($([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\VERSION'))).Trim())</Version>
+    <InformationalVersion>$(Version)</InformationalVersion>
+    <Product>Meng Bot</Product>
+    <Authors>Meng Bot</Authors>
     <Description>安全优先、可回滚的本地 Coding Agent</Description>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="MHarness.Desktop.Tests\**" />
+    <None Remove="MHarness.Desktop.Tests\**" />
+    <InternalsVisibleTo Include="MHarness.Desktop.Tests" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Markdig" Version="1.3.2" />

@@ -21,8 +21,26 @@ public sealed class Conversation
     public string Workspace { get; set; } = "";
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public const int MaxToolLogChars = 80_000;
+
     public List<ChatMessage> Messages { get; set; } = new();
     public string ToolLog { get; set; } = "";
+
+    /// <summary>
+    /// 追加工具日志并截到最近 <see cref="MaxToolLogChars"/> 字符，避免会话 JSON 无限膨胀。
+    /// </summary>
+    public void AppendToolLog(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+        ToolLog += text;
+        if (ToolLog.Length > MaxToolLogChars)
+        {
+            ToolLog = ToolLog[(ToolLog.Length - MaxToolLogChars)..];
+        }
+    }
 
     [JsonIgnore]
     public bool IsUnbound => string.IsNullOrWhiteSpace(Workspace);

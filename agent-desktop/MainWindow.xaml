@@ -23,7 +23,7 @@
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <TitleBar x:Name="AppTitleBar" Title="M Bot">
+        <TitleBar x:Name="AppTitleBar" Title="Meng Bot">
             <TitleBar.IconSource>
                 <BitmapIconSource UriSource="ms-appx:///Assets/m-harness-icon.png" ShowAsMonochrome="False"/>
             </TitleBar.IconSource>

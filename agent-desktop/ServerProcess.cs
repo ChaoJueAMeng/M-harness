@@ -10,7 +10,13 @@ namespace MHarness.Desktop;
 /// </summary>
 internal sealed class ServerProcess : IDisposable
 {
+    private static readonly object JavaCacheLock = new();
+    private static string? cachedJava;
+    private static DateTimeOffset cachedJavaAt;
+    private static readonly TimeSpan JavaCacheTtl = TimeSpan.FromMinutes(10);
+
     private readonly Process process;
+    private bool disposed;
 
     public int Port { get; }
     public string Token { get; }
@@ -29,11 +35,36 @@ internal sealed class ServerProcess : IDisposable
         }
     }
 
+    /// <summary>
+    /// Java 子进程意外退出时触发（线程池线程）。主动 <see cref="Dispose"/> 结束进程不会触发。
+    /// </summary>
+    public event Action<int?>? Exited;
+
     private ServerProcess(Process process, int port, string token)
     {
         this.process = process;
         Port = port;
         Token = token;
+        process.EnableRaisingEvents = true;
+        process.Exited += OnProcessExited;
+    }
+
+    private void OnProcessExited(object? sender, EventArgs e)
+    {
+        if (disposed)
+        {
+            return;
+        }
+        int? code = null;
+        try
+        {
+            code = process.ExitCode;
+        }
+        catch
+        {
+            // ignore
+        }
+        Exited?.Invoke(code);
     }
 
     /// <summary>
@@ -114,16 +145,18 @@ internal sealed class ServerProcess : IDisposable
     /// </summary>
     public void Dispose()
     {
-        if (!process.HasExited)
+        disposed = true;
+        process.Exited -= OnProcessExited;
+        try
         {
-            try
+            if (!process.HasExited)
             {
                 process.Kill(entireProcessTree: true);
             }
-            catch
-            {
-                // ignore
-            }
+        }
+        catch
+        {
+            // ignore
         }
         process.Dispose();
     }
@@ -172,6 +205,15 @@ internal sealed class ServerProcess : IDisposable
     /// </summary>
     internal static string FindJava()
     {
+        lock (JavaCacheLock)
+        {
+            if (cachedJava != null
+                && DateTimeOffset.UtcNow - cachedJavaAt < JavaCacheTtl
+                && File.Exists(cachedJava))
+            {
+                return cachedJava;
+            }
+        }
         var candidates = new List<string>();
         string bundled = Path.Combine(AppContext.BaseDirectory, "jre", "bin", "java.exe");
         if (File.Exists(bundled))
@@ -205,6 +247,11 @@ internal sealed class ServerProcess : IDisposable
         string? chosen = candidates.Distinct(StringComparer.OrdinalIgnoreCase).FirstOrDefault(IsJava21OrNewer);
         if (chosen != null)
         {
+            lock (JavaCacheLock)
+            {
+                cachedJava = chosen;
+                cachedJavaAt = DateTimeOffset.UtcNow;
+            }
             return chosen;
         }
 
