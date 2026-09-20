@@ -1,4 +1,4 @@
-# M Bot
+# Meng Bot
 
 安全优先、可回滚、支持 OpenAI-compatible API 的本地 Coding Agent（当前版本 `0.1.0`）。
 
@@ -50,7 +50,9 @@ M_HARNESS_API_KEY=sk-...
 M_HARNESS_MODEL=deepseek-chat
 ```
 
-加载顺序：全局 `~/.m-harness/.env` → 工作区 `.env`（旧配置回退）→ 当前目录 `.env` → 进程环境变量 → 内置默认值。可用 `M_HARNESS_CONFIG_DIR` 改全局配置目录。
+加载顺序：全局 `~/.m-harness/.env` → 进程环境变量 → 内置默认值。可用 `M_HARNESS_CONFIG_DIR` 改全局配置目录。
+
+工作区 `.env` 和当前目录 `.env` 只是旧版配置的回退：**仅当全局配置和环境变量都没有提供 API Key 时**才会读取。工作区文件属于不可信的项目内容，不允许它在你已有 Key 的情况下改写 `M_HARNESS_BASE_URL`，否则打开一个恶意仓库就能把 Key 发到别人的服务器。
 
 PowerShell 也可临时覆盖：
 
@@ -66,13 +68,13 @@ $env:M_HARNESS_MODEL="deepseek-chat"
 - **Ask**：只读（`glob` / `grep` / `read_file`），写文件和 Shell 直接拒绝
 - **Agent**：可写文件、跑命令；默认弹出批准框。CLI `--yes` 或桌面「自动批准」可跳过确认
 - **Dry-run**：变更工具只返回预览，不落盘，也不拍 checkpoint
-- **HardDeny**：`git push --force` / `git reset --hard` / `git clean -fd` / `rm /` / `format` / `shutdown` / `reboot` 一律禁止，不能被自动批准覆盖
+- **HardDeny**：`git push --force` / `git reset --hard` / `git clean -fd` / `rm /` / `format C:` / `rd /s` / `Remove-Item -Recurse -Force` / `shutdown` / `reboot` 一律禁止，不能被自动批准覆盖。这只是兜底，`git log --format`、`dotnet format` 不会误伤
 - **Checkpoint**：真正会改工作区时才拍快照；运行时异常会尝试自动回滚
 - **本机服务**：只允许绑定 `127.0.0.1` / `localhost`，请求必须带启动时随机生成的 Bearer token；同一时刻只跑一个任务
 
 发给模型的系统提示会注入工作区摘要、浅层文件树，以及根目录 `AGENTS.md`（若存在）。`AGENTS.md` 被标为 untrusted，不能覆盖上述安全规则。
 
-默认上限：最多 20 步、约 10 万输入 token、单条工具结果约 8k token、历史最多 40 条。取消是协作式的：正在进行的模型调用不会被打断，但下一轮步/工具不再执行。
+默认上限：最多 20 步、约 10 万输入 token、单条工具结果约 8k token、历史最多 40 条。可用环境变量 `M_HARNESS_MAX_STEPS` / `M_HARNESS_MAX_INPUT_TOKENS` / `M_HARNESS_MAX_TOOL_RESULT_TOKENS` / `M_HARNESS_MAX_HISTORY_MESSAGES` 覆盖。裁剪按粗估 token（拉丁约 4 字符、CJK 约 1 字符）。超限时先丢更早会话的轮次，再按「一次工具调用 + 其全部结果」为单位丢掉本轮最旧的步骤；当前任务和最近一个步骤始终保留。同一工具同一参数连续失败 3 次会停止。取消会打断正在等待的模型调用和 `run_terminal` 进程树；429 / 5xx 最多重试 3 次。诊断写在 `~/.m-harness/logs/m-harness.log`。
 
 ## 构建
 
@@ -104,7 +106,7 @@ $env:JAVA_HOME="$env:USERPROFILE\.jdks\ms-21.0.12"
 dotnet run --project agent-desktop\MHarness.Desktop.csproj -c Debug -p:Platform=x64
 ```
 
-这是 WinUI 窗口程序，终端里通常没有日志。成功时会弹出标题为 **M Bot** 的窗口，关掉窗口后 `dotnet run` 才会结束。若立刻回到提示符，说明进程秒退，可直接运行：
+这是 WinUI 窗口程序，终端里通常没有日志。成功时会弹出标题为 **Meng Bot** 的窗口，关掉窗口后 `dotnet run` 才会结束。若立刻回到提示符，说明进程秒退，可直接运行：
 
 ```powershell
 .\agent-desktop\bin\x64\Debug\net8.0-windows10.0.19041.0\win-x64\MHarness.Desktop.exe
@@ -113,6 +115,8 @@ dotnet run --project agent-desktop\MHarness.Desktop.csproj -c Debug -p:Platform=
 窗口会自动查找 JDK 21：先看 exe 旁的 `jre`（安装包自带），再看 `JAVA_HOME`，再看 `%USERPROFILE%\.jdks\`，最后才用 PATH 上版本 ≥ 21 的 `java`。不要依赖 PATH 上的 Java 8。
 
 窗口会自动查找 `m-harness-server.jar`：环境变量 `M_HARNESS_SERVER_JAR` → exe 旁 → 向上查找 `agent-server/target/m-harness-server.jar`。
+
+Java 服务意外退出时窗口会自动重新拉起；若启动后 30 秒内连续退出两次则停止自动重启，状态栏会给出退出码，点「发送」可手动再试，细节写在 `~/.m-harness/desktop-crash.log`。
 
 窗口里可以：
 
@@ -138,9 +142,9 @@ $env:JAVA_HOME="$env:USERPROFILE\.jdks\ms-21.0.12"
 
 产物在 `dist/`：
 
-- `M-Bot-Setup-0.1.0.exe` — **Inno Setup 安装包**。双击安装到 `%LOCALAPPDATA%\Programs\M Bot`，写入开始菜单，可在「设置 > 应用」里卸载。不弹管理员 UAC。最低系统 Windows 10 1809（10.0.17763）。
+- `Meng-Bot-Setup-0.1.0.exe` — **Inno Setup 安装包**。双击安装到 `%LOCALAPPDATA%\Programs\Meng Bot`，写入开始菜单，可在「设置 > 应用」里卸载。不弹管理员 UAC。最低系统 Windows 10 1809（10.0.17763）。
 - `app/` — 发布目录，可直接运行 `MHarness.Desktop.exe`
-- `M-Bot-0.1.0-win-x64.zip` — 绿色版（解压即用；目录内也有 `Install.ps1` / `Uninstall.ps1`）
+- `Meng-Bot-0.1.0-win-x64.zip` — 绿色版（解压即用；目录内也有 `Install.ps1` / `Uninstall.ps1`）
 
 向别人分发时给 `Setup.exe` 即可。装好后不必再装 JDK、.NET SDK 或 Git。工作区不必是 git 仓库。
 
@@ -188,8 +192,8 @@ java -jar agent-server/target/m-harness-server.jar --bind 127.0.0.1 --port 0
 | `GET` | `/v1/run/{id}/events` | SSE：`token` / `tool` / `approval` / `done` |
 | `POST` | `/v1/run/{id}/approval` | 批准或拒绝挂起的写操作 |
 | `POST` | `/v1/run/{id}/cancel` | 取消任务并拒绝待批准请求 |
-| `GET` | `/v1/checkpoint` | 查询当前 checkpoint |
-| `POST` | `/v1/rollback` | 回滚到最近 checkpoint |
+| `GET` | `/v1/checkpoint` | 查询当前 checkpoint；该工作区有任务在跑时 `409` |
+| `POST` | `/v1/rollback` | 回滚到最近 checkpoint；该工作区有任务在跑时 `409` |
 | `GET` | `/v1/settings` | 读取全局设置（Key 只返回是否已设置和后四位） |
 | `PUT` | `/v1/settings` | 写入全局 `~/.m-harness/.env` |
 | `POST` | `/v1/title` | 根据第一条用户消息生成侧栏标题，返回 `{ "title": "..." }`；不占用正在运行的任务 |
@@ -199,9 +203,9 @@ java -jar agent-server/target/m-harness-server.jar --bind 127.0.0.1 --port 0
 | 工具 | 作用 |
 | --- | --- |
 | `glob` | 按 glob 列文件，最多 200 条；跳过 `.git` / `target` / `node_modules` |
-| `grep` | 精确搜索；优先调用本机 `rg`，否则 Java 遍历。最多 50 条 |
-| `read_file` | 读文件（可指定行偏移/行数），输出带行号，约 32KB 截断 |
-| `search_replace` | 替换文件中恰好出现一次的旧字符串；不唯一时返回最多 5 处行号 |
+| `grep` | 精确搜索；优先调用本机 `rg`（`-e` + `--`，读满 50 条即停），否则 Java 遍历。最多 50 条 |
+| `read_file` | 读文件（可指定行偏移/行数），输出带行号，约 32KB 截断。UTF-8 / BOM / GB18030 |
+| `search_replace` | 替换文件中恰好出现一次的旧字符串；匹配前归一换行，写回原 EOL；不唯一时返回最多 5 处行号 |
 | `write_file` | **仅新建**；目标已存在则失败，应改用 `search_replace` |
 | `run_terminal` | 在工作区根执行一条命令；超时 120 秒会杀掉进程树 |
 
@@ -209,12 +213,12 @@ java -jar agent-server/target/m-harness-server.jar --bind 127.0.0.1 --port 0
 
 ## Checkpoint
 
-快照写在 `refs/m-harness/checkpoints/<id>`，不会使用 `git stash`，也不会在启动时 reset 工作区。快照包含当时磁盘上的文件，跳过 `.git` / `target` / `node_modules`。
+快照写在 `refs/m-harness/checkpoints/<id>`，不会使用 `git stash`，也不会在启动时 reset 工作区。快照包含当时磁盘上的普通文件，跳过 `.git` / `target` / `node_modules` / `dist` / `.venv` 等构建与依赖目录、`.gitignore` 里能识别的单段目录名、大于 2MB 或常见二进制、符号链接，以及 realpath 已在工作区之外的目录（junction）。`id` 带毫秒时间前缀，`status` / `rollback` 里的「最近一次」按创建时间判定，每个工作区最多保留 20 个快照，更早的自动删除。
 
 - 工作区已有 `.git`：ref 写进用户仓库
 - 否则：写入 `~/.m-harness/checkpoints/<工作区路径 SHA-256>/` 的 sidecar 裸仓库，用户目录不会出现 `.git`
 
-Ask 和 dry-run 不拍快照。任务成功后删除该 ref；失败时尝试自动回滚；步数上限、取消或手动 `rollback` 时恢复到快照（包括删除其后新建的文件）。
+Ask 和 dry-run 不拍快照。任务成功后删除该 ref；运行时异常会尝试自动回滚；步数上限或取消时 ref 保留，可手动 `rollback`。回滚会把快照里的文件写回，并删除快照之后新建的文件；快照没有覆盖的 `target` / `node_modules` / 符号链接不会被碰。
 
 ## 许可证
 

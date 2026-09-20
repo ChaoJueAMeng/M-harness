@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  java:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: 测试 Java 模块
+        run: ./mvnw -B test
+
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: 桌面端逻辑测试
+        run: dotnet test agent-desktop\MHarness.Desktop.Tests\MHarness.Desktop.Tests.csproj -c Release --nologo
+      - name: 编译 WinUI 桌面端
+        run: dotnet build agent-desktop\MHarness.Desktop.csproj -c Release -p:Platform=x64 --nologo
