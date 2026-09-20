@@ -18,4 +18,8 @@ public interface AgentObserver {
      * @param chars    回传给模型的 JSON 载荷长度
      */
     void onTool(String toolName, String status, int chars);
+
+    /** 一轮模型调用结束后的用量；供应商没返回时两个参数都可能为 null。 */
+    default void onUsage(Integer inputTokens, Integer outputTokens) {
+    }
 }

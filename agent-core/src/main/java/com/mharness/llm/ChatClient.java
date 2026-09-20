@@ -12,4 +12,8 @@ public interface ChatClient {
      * 发送当前对话和可用工具 schema，返回模型文本和/或工具调用。
      */
     LlmResponse chat(List<ChatTurn> turns, List<ToolSpecification> tools);
+
+    /** 打断正在进行的模型调用。默认空实现；调用方仍应检查取消标志。 */
+    default void cancel() {
+    }
 }

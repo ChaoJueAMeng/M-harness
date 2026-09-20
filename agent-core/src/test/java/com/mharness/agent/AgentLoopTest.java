@@ -107,6 +107,29 @@ class AgentLoopTest {
     }
 
     @Test
+    void identicalToolFailuresStopTheRun() throws Exception {
+        Files.writeString(workspace.resolve("A.txt"), "keep");
+        AgentLoop loop = loop(PermissionMode.AGENT, false, new ScriptedChatClient(
+                failReplace(),
+                failReplace(),
+                failReplace(),
+                new LlmResponse("should not reach", List.of())
+        ));
+        AgentOutcome outcome = loop.run("change it");
+        assertThat(outcome.status()).isEqualTo(AgentOutcome.Status.FAILED);
+        assertThat(outcome.error()).contains("连续失败");
+        assertThat(Files.readString(workspace.resolve("A.txt"))).isEqualTo("keep");
+    }
+
+    private static LlmResponse failReplace() {
+        return new LlmResponse("", List.of(new LlmToolCall(
+                "1",
+                "search_replace",
+                "{\"path\":\"A.txt\",\"old_string\":\"missing\",\"new_string\":\"x\"}"
+        )));
+    }
+
+    @Test
     void priorTurnsAreIncludedInFirstModelCall() {
         ScriptedChatClient client = new ScriptedChatClient(new LlmResponse("later", List.of()));
         AgentLoop loop = loop(PermissionMode.ASK, false, client);
@@ -168,7 +191,7 @@ class AgentLoopTest {
                 new WriteFileTool(guard)
         ));
         PermissionPolicy policy = new PermissionPolicy(mode, dryRun, true, new AutoApprovalService(true));
-        ContextPacker packer = new ContextPacker(guard, AgentLimits.defaults(), mode, dryRun);
-        return new AgentLoop(client, registry, policy, packer, new CheckpointService(guard), AgentLimits.defaults(), observer);
+        ContextPacker packer = new ContextPacker(guard, AgentLimits.builtin(), mode, dryRun);
+        return new AgentLoop(client, registry, policy, packer, new CheckpointService(guard), AgentLimits.builtin(), observer);
     }
 }

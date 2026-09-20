@@ -1,5 +1,6 @@
 package com.mharness.llm;
 
+import com.mharness.config.HarnessLog;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.data.message.AiMessage;
@@ -16,16 +17,21 @@ import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
 /**
  * 通过 LangChain4j 调用 OpenAI 兼容的流式 Chat Completions。
  * 部分 token 立刻回调 {@link TokenListener}，整段结束后再组装 {@link LlmResponse}。
+ * 429 / 5xx 会重试最多 3 次；{@link #cancel()} 打断当前等待。
  */
 public final class OpenAiCompatibleChatClient implements ChatClient {
+    private static final int MAX_ATTEMPTS = 3;
     private final StreamingChatModel model;
     private final TokenListener listener;
+    private volatile CompletableFuture<ChatResponse> inFlight;
 
     /**
      * 生产构造：按 baseUrl / apiKey / modelName 创建官方 OpenAI 流式客户端（也适用于 DeepSeek 等兼容服务）。
@@ -57,11 +63,41 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
                 .messages(toMessages(turns))
                 .toolSpecifications(tools)
                 .build();
+        RuntimeException last = null;
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            try {
+                return completeOnce(request);
+            } catch (CancellationException e) {
+                throw e;
+            } catch (RuntimeException e) {
+                last = e;
+                if (attempt == MAX_ATTEMPTS || !retryable(e)) {
+                    throw e;
+                }
+                HarnessLog.warn("模型调用将重试（第 " + attempt + " 次失败）: " + e.getMessage());
+                sleepBackoff(attempt);
+            }
+        }
+        throw last == null ? new IllegalStateException("调用模型失败") : last;
+    }
+
+    @Override
+    public void cancel() {
+        CompletableFuture<ChatResponse> future = inFlight;
+        if (future != null) {
+            future.completeExceptionally(new CancellationException("已取消"));
+        }
+    }
+
+    private LlmResponse completeOnce(ChatRequest request) {
         CompletableFuture<ChatResponse> future = new CompletableFuture<>();
+        inFlight = future;
         model.chat(request, new StreamingChatResponseHandler() {
             @Override
             public void onPartialResponse(String partialResponse) {
-                listener.onToken(partialResponse);
+                if (!future.isDone()) {
+                    listener.onToken(partialResponse);
+                }
             }
 
             @Override
@@ -83,10 +119,57 @@ public final class OpenAiCompatibleChatClient implements ChatClient {
                     calls.add(new LlmToolCall(req.id(), req.name(), req.arguments()));
                 }
             }
-            return new LlmResponse(ai.text(), calls);
+            Integer inputTokens = null;
+            Integer outputTokens = null;
+            try {
+                if (response.metadata() != null && response.metadata().tokenUsage() != null) {
+                    inputTokens = response.metadata().tokenUsage().inputTokenCount();
+                    outputTokens = response.metadata().tokenUsage().outputTokenCount();
+                }
+            } catch (RuntimeException ignored) {
+                // 兼容不同 langchain4j 版本
+            }
+            return new LlmResponse(ai.text(), calls, inputTokens, outputTokens);
         } catch (CompletionException e) {
             Throwable cause = e.getCause() == null ? e : e.getCause();
+            if (cause instanceof CancellationException cancelled) {
+                throw cancelled;
+            }
             throw new IllegalStateException("调用模型失败: " + cause.getMessage(), cause);
+        } finally {
+            inFlight = null;
+        }
+    }
+
+    static boolean retryable(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof CancellationException) {
+                return false;
+            }
+            String message = current.getMessage() == null ? "" : current.getMessage().toLowerCase(Locale.ROOT);
+            if (message.contains("429")
+                    || message.contains("500")
+                    || message.contains("502")
+                    || message.contains("503")
+                    || message.contains("529")
+                    || message.contains("rate limit")
+                    || message.contains("too many requests")
+                    || message.contains("timeout")
+                    || message.contains("temporar")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private static void sleepBackoff(int attempt) {
+        try {
+            Thread.sleep(400L * attempt);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new CancellationException("已取消");
         }
     }
 
