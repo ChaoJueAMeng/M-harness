@@ -11,7 +11,7 @@
     </parent>
 
     <artifactId>agent-core</artifactId>
-    <name>M Bot Core</name>
+    <name>Meng Bot Core</name>
 
     <dependencies>
         <dependency>

@@ -11,7 +11,7 @@
     </parent>
 
     <artifactId>agent-server</artifactId>
-    <name>M Bot Server</name>
+    <name>Meng Bot Server</name>
 
     <dependencies>
         <dependency>

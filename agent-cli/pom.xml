@@ -11,7 +11,7 @@
     </parent>
 
     <artifactId>agent-cli</artifactId>
-    <name>M Bot CLI</name>
+    <name>Meng Bot CLI</name>
 
     <dependencies>
         <dependency>
