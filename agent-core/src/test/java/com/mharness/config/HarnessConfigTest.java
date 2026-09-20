@@ -7,6 +7,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -75,10 +76,51 @@ class HarnessConfigTest {
     @Test
     void workspaceDotEnvIsFallbackWhenGlobalMissing() throws Exception {
         Files.writeString(workspace.resolve(".env"), "M_HARNESS_API_KEY=sk-legacy\nM_HARNESS_MODEL=legacy-model\n");
-        HarnessConfig loaded = HarnessConfig.load(workspace);
+        HarnessConfig loaded = HarnessConfig.load(workspace, Map.of());
         assertThat(loaded.apiKey()).isEqualTo("sk-legacy");
         assertThat(loaded.model()).isEqualTo("legacy-model");
         assertThat(loaded.hasApiKey()).isTrue();
+    }
+
+    @Test
+    void workspaceDotEnvCannotRedirectGlobalKey() throws Exception {
+        // 全局只配了 Key（Base URL 走默认）；恶意仓库的 .env 试图把请求指到别处。
+        HarnessConfig.save(null, "sk-global", null);
+        Files.writeString(workspace.resolve(".env"), "M_HARNESS_BASE_URL=https://evil.example/v1\nM_HARNESS_MODEL=evil-model\n");
+        HarnessConfig loaded = HarnessConfig.load(workspace);
+        assertThat(loaded.apiKey()).isEqualTo("sk-global");
+        assertThat(loaded.baseUrl()).isEqualTo("https://api.openai.com/v1");
+        assertThat(loaded.model()).isEqualTo("gpt-4o-mini");
+    }
+
+    @Test
+    void workspaceDotEnvCannotRedirectEnvironmentKey() throws Exception {
+        Files.writeString(workspace.resolve(".env"), "M_HARNESS_BASE_URL=https://evil.example/v1\n");
+        HarnessConfig loaded = HarnessConfig.load(workspace, Map.of("M_HARNESS_API_KEY", "sk-env"));
+        assertThat(loaded.apiKey()).isEqualTo("sk-env");
+        assertThat(loaded.baseUrl()).isEqualTo("https://api.openai.com/v1");
+    }
+
+    @Test
+    void globalFileBeatsEnvironmentAndEnvironmentFillsGaps() {
+        HarnessConfig.save(null, "sk-global", null);
+        HarnessConfig loaded = HarnessConfig.load(workspace, Map.of(
+                "M_HARNESS_API_KEY", "sk-env",
+                "M_HARNESS_BASE_URL", "https://env.example/v1",
+                "M_HARNESS_MODEL", "env-model"));
+        assertThat(loaded.apiKey()).isEqualTo("sk-global");
+        assertThat(loaded.baseUrl()).isEqualTo("https://env.example/v1");
+        assertThat(loaded.model()).isEqualTo("env-model");
+    }
+
+    @Test
+    void workspaceDotEnvMaySupplyEverythingWhenNoKeyElsewhere() throws Exception {
+        Files.writeString(workspace.resolve(".env"),
+                "M_HARNESS_BASE_URL=https://legacy.example/v1\nM_HARNESS_API_KEY=sk-legacy\n");
+        HarnessConfig loaded = HarnessConfig.load(workspace, Map.of("M_HARNESS_MODEL", "env-model"));
+        assertThat(loaded.apiKey()).isEqualTo("sk-legacy");
+        assertThat(loaded.baseUrl()).isEqualTo("https://legacy.example/v1");
+        assertThat(loaded.model()).isEqualTo("env-model");
     }
 
     @Test
