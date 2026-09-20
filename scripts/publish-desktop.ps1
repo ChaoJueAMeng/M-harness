@@ -24,7 +24,7 @@ Set-StrictMode -Version Latest
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Dist = Join-Path $Root "dist"
 $AppDir = Join-Path $Dist "app"
-$Version = "0.1.0"
+$Version = (Get-Content -LiteralPath (Join-Path $Root "VERSION") -Raw).Trim()
 $Jar = Join-Path $Root "agent-server\target\m-harness-server.jar"
 $Csproj = Join-Path $Root "agent-desktop\MHarness.Desktop.csproj"
 $Iss = Join-Path $Root "installer\m-harness.iss"
@@ -166,7 +166,7 @@ if (-not $SkipJre) {
     }
 }
 
-$zip = Join-Path $Dist "M-Bot-$Version-win-x64.zip"
+$zip = Join-Path $Dist "Meng-Bot-$Version-win-x64.zip"
 if (Test-Path $zip) {
     Remove-Item $zip -Force
 }
@@ -188,7 +188,7 @@ if (-not $SkipInstaller) {
         if ($LASTEXITCODE -ne 0) {
             throw "ISCC 编译失败，退出码 $LASTEXITCODE"
         }
-        $setup = Join-Path $Dist "M-Bot-Setup-$Version.exe"
+        $setup = Join-Path $Dist "Meng-Bot-Setup-$Version.exe"
     }
 }
 

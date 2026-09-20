@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    卸载当前用户安装的 M Bot（开始菜单快捷方式、注册表、程序目录）。
+    卸载当前用户安装的 Meng Bot（开始菜单快捷方式、注册表、程序目录）。
 #>
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
@@ -14,18 +14,31 @@ Get-Process -Name "MHarness.Desktop" -ErrorAction SilentlyContinue | ForEach-Obj
     }
 }
 
-$dest = Join-Path $env:LOCALAPPDATA "Programs\M Bot"
-$oldDest = Join-Path $env:LOCALAPPDATA "Programs\M-harness"
+$dest = Join-Path $env:LOCALAPPDATA "Programs\Meng Bot"
+$legacyDests = @(
+    (Join-Path $env:LOCALAPPDATA "Programs\M Bot"),
+    (Join-Path $env:LOCALAPPDATA "Programs\M-harness")
+)
 $programs = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
-$lnk = Join-Path $programs "M Bot.lnk"
-$oldLnk = Join-Path $programs "M-harness.lnk"
-$key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\M-Bot"
-$oldKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\M-harness"
+$lnk = Join-Path $programs "Meng Bot.lnk"
+$legacyLnks = @(
+    (Join-Path $programs "M Bot.lnk"),
+    (Join-Path $programs "M-harness.lnk")
+)
+$key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Meng-Bot"
+$legacyKeys = @(
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\M-Bot",
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\M-harness"
+)
 
 Remove-Item $key -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item $oldKey -Recurse -Force -ErrorAction SilentlyContinue
+foreach ($legacyKey in $legacyKeys) {
+    Remove-Item $legacyKey -Recurse -Force -ErrorAction SilentlyContinue
+}
 Remove-Item $lnk -Force -ErrorAction SilentlyContinue
-Remove-Item $oldLnk -Force -ErrorAction SilentlyContinue
+foreach ($legacyLnk in $legacyLnks) {
+    Remove-Item $legacyLnk -Force -ErrorAction SilentlyContinue
+}
 
 function Remove-InstallDir([string] $path) {
     if (-not (Test-Path $path)) {
@@ -47,6 +60,8 @@ function Remove-InstallDir([string] $path) {
 }
 
 Remove-InstallDir $dest
-Remove-InstallDir $oldDest
+foreach ($legacyDest in $legacyDests) {
+    Remove-InstallDir $legacyDest
+}
 
-Write-Host "已卸载 M Bot。"
+Write-Host "已卸载 Meng Bot。"

@@ -1,12 +1,12 @@
-; M Bot 桌面端安装脚本（Inno Setup 6）
+; Meng Bot 桌面端安装脚本（Inno Setup 6）
 ; 由 scripts/publish-desktop.ps1 调用 ISCC 编译。
 
 #ifndef MyAppVersion
   #define MyAppVersion "0.1.0"
 #endif
 
-#define MyAppName "M Bot"
-#define MyAppPublisher "M Bot"
+#define MyAppName "Meng Bot"
+#define MyAppPublisher "Meng Bot"
 #define MyAppExeName "MHarness.Desktop.exe"
 #define MyAppSource "..\dist\app"
 
@@ -16,12 +16,12 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppCopyright={#MyAppPublisher}
-DefaultDirName={localappdata}\Programs\M Bot
+DefaultDirName={localappdata}\Programs\Meng Bot
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\dist
-OutputBaseFilename=M-Bot-Setup-{#MyAppVersion}
+OutputBaseFilename=Meng-Bot-Setup-{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
