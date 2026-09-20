@@ -1,10 +1,10 @@
 package com.mharness.tool;
 
+import com.mharness.workspace.TextFiles;
 import com.mharness.workspace.WorkspaceGuard;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
 
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -50,7 +50,7 @@ public final class WriteFileTool implements AgentTool {
         if (parent != null) {
             Files.createDirectories(parent);
         }
-        Files.writeString(file, content, StandardCharsets.UTF_8);
+        TextFiles.writeNew(file, content);
         return ToolResult.ok("已创建: " + guard.relativize(file));
     }
 }

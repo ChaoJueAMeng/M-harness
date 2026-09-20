@@ -1,10 +1,10 @@
 package com.mharness.tool;
 
+import com.mharness.workspace.TextFiles;
 import com.mharness.workspace.WorkspaceGuard;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
 
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -12,7 +12,8 @@ import java.util.List;
 
 /**
  * 在文件中用新字符串替换「恰好出现一次」的旧字符串。
- * 找不到或出现多次都失败；多次时最多返回 5 处行号和片段，让模型改用更独特的 old_string。
+ * 匹配前把文件和 old/new 都归一成 {@code \n}，写回时恢复原换行风格。
+ * 找不到或出现多次都失败；多次时最多返回 5 处行号和片段。
  */
 public final class SearchReplaceTool implements AgentTool {
     private static final int MAX_MATCHES = 5;
@@ -32,7 +33,7 @@ public final class SearchReplaceTool implements AgentTool {
     public ToolSpecification specification() {
         return ToolSpecification.builder()
                 .name(name())
-                .description("在文件中用新字符串替换唯一出现的旧字符串。旧串必须恰好匹配一次。")
+                .description("在文件中用新字符串替换唯一出现的旧字符串。旧串必须恰好匹配一次。换行风格会按原文件写回。")
                 .parameters(JsonObjectSchema.builder()
                         .addStringProperty("path", "相对工作区的文件路径")
                         .addStringProperty("old_string", "必须在文件中唯一出现的原文")
@@ -46,13 +47,14 @@ public final class SearchReplaceTool implements AgentTool {
     public ToolResult execute(String arguments) throws Exception {
         var args = JsonArgs.parse(arguments);
         String userPath = JsonArgs.requiredText(args, "path");
-        String oldString = JsonArgs.requiredText(args, "old_string");
-        String newString = args.has("new_string") ? args.get("new_string").asText() : "";
+        String oldString = TextFiles.normalizeLf(JsonArgs.requiredText(args, "old_string"));
+        String newString = args.has("new_string") ? TextFiles.normalizeLf(args.get("new_string").asText()) : "";
         Path file = guard.resolveExisting(userPath);
         if (!Files.isRegularFile(file)) {
             return ToolResult.error("NOT_FOUND", "不是普通文件: " + userPath);
         }
-        String original = Files.readString(file, StandardCharsets.UTF_8);
+        TextFiles.Loaded loaded = TextFiles.read(file);
+        String original = loaded.withLf();
         List<Integer> offsets = findOffsets(original, oldString);
         if (offsets.isEmpty()) {
             return ToolResult.error("MATCH_NOT_FOUND", "未找到 old_string: " + userPath);
@@ -68,7 +70,7 @@ public final class SearchReplaceTool implements AgentTool {
             return ToolResult.matches("MATCH_NOT_UNIQUE", matches);
         }
         String updated = original.replace(oldString, newString);
-        Files.writeString(file, updated, StandardCharsets.UTF_8);
+        TextFiles.write(file, loaded, updated);
         return ToolResult.ok("已替换 1 处: " + guard.relativize(file));
     }
 

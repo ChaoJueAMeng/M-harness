@@ -8,6 +8,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 在工作区根目录执行一条 shell 命令。工作目录锁定为仓库根，超时会杀掉整棵进程树。
@@ -16,6 +17,7 @@ import java.util.concurrent.TimeUnit;
 public final class RunTerminalTool implements AgentTool {
     private final WorkspaceGuard guard;
     private final long timeoutSeconds;
+    private final AtomicReference<Process> current = new AtomicReference<>();
 
     /** 默认超时 120 秒。 */
     public RunTerminalTool(WorkspaceGuard guard) {
@@ -54,20 +56,38 @@ public final class RunTerminalTool implements AgentTool {
         builder.directory(guard.workspace().toFile());
         builder.redirectErrorStream(true);
         Process process = builder.start();
+        current.set(process);
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         Thread reader = Thread.ofVirtual().start(() -> drain(process.getInputStream(), buffer));
-        boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-        if (!finished) {
-            destroyTree(process);
+        try {
+            boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+            if (!finished) {
+                destroyTree(process);
+                reader.join(1000);
+                return ToolResult.error("TIMEOUT", "命令超时已被终止（" + timeoutSeconds + "s）: " + command);
+            }
             reader.join(1000);
-            return ToolResult.error("TIMEOUT", "命令超时已被终止（" + timeoutSeconds + "s）: " + command);
+            if (Thread.currentThread().isInterrupted()) {
+                destroyTree(process);
+                return ToolResult.error("CANCELLED", "命令已被取消: " + command);
+            }
+            String output = buffer.toString(StandardCharsets.UTF_8);
+            if (output.length() > 16_000) {
+                output = output.substring(0, 16_000) + "\n... truncated ...";
+            }
+            return ToolResult.ok("exit=" + process.exitValue() + "\n" + output);
+        } finally {
+            current.compareAndSet(process, null);
         }
-        reader.join(1000);
-        String output = buffer.toString(StandardCharsets.UTF_8);
-        if (output.length() > 16_000) {
-            output = output.substring(0, 16_000) + "\n... truncated ...";
+    }
+
+    /** 杀掉当前正在跑的命令进程树。 */
+    @Override
+    public void cancel() {
+        Process process = current.get();
+        if (process != null) {
+            destroyTree(process);
         }
-        return ToolResult.ok("exit=" + process.exitValue() + "\n" + output);
     }
 
     /**

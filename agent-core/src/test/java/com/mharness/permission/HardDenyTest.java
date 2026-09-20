@@ -14,5 +14,10 @@ class HardDenyTest {
         assertThat(HardDeny.matches("rm -rf /")).isTrue();
         assertThat(HardDeny.matches("mvn test")).isFalse();
         assertThat(HardDeny.matches("git status")).isFalse();
+        assertThat(HardDeny.matches("git log --format=oneline")).isFalse();
+        assertThat(HardDeny.matches("dotnet format")).isFalse();
+        assertThat(HardDeny.matches("rd /s /q build")).isTrue();
+        assertThat(HardDeny.matches("Remove-Item -Recurse -Force tmp")).isTrue();
+        assertThat(HardDeny.matches("format C:")).isTrue();
     }
 }

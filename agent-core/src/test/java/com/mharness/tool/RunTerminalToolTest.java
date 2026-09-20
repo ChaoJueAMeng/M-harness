@@ -15,7 +15,7 @@ class RunTerminalToolTest {
 
     @Test
     void timesOutAndKillsProcess() throws Exception {
-        RunTerminalTool tool = new RunTerminalTool(new WorkspaceGuard(workspace), 2);
+        RunTerminalTool tool = new RunTerminalTool(new WorkspaceGuard(workspace), 1);
         String command = System.getProperty("os.name").toLowerCase().contains("win")
                 ? "ping -t 127.0.0.1"
                 : "sleep 30";

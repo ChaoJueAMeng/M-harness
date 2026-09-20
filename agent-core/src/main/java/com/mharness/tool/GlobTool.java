@@ -1,6 +1,7 @@
 package com.mharness.tool;
 
 import com.mharness.workspace.WorkspaceGuard;
+import com.mharness.workspace.WorkspaceIgnore;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
 
@@ -22,9 +23,11 @@ import java.util.List;
 public final class GlobTool implements AgentTool {
     private static final int MAX_RESULTS = 200;
     private final WorkspaceGuard guard;
+    private final WorkspaceIgnore ignore;
 
     public GlobTool(WorkspaceGuard guard) {
         this.guard = guard;
+        this.ignore = WorkspaceIgnore.of(guard.workspace());
     }
 
     @Override
@@ -54,11 +57,7 @@ public final class GlobTool implements AgentTool {
         Files.walkFileTree(guard.workspace(), new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                String name = dir.getFileName() == null ? "" : dir.getFileName().toString();
-                if (name.equals(".git") || name.equals("target") || name.equals("node_modules")) {
-                    return FileVisitResult.SKIP_SUBTREE;
-                }
-                return FileVisitResult.CONTINUE;
+                return ignore.skipDirectory(dir) ? FileVisitResult.SKIP_SUBTREE : FileVisitResult.CONTINUE;
             }
 
             @Override

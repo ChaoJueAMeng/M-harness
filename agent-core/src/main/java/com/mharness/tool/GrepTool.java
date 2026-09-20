@@ -1,6 +1,8 @@
 package com.mharness.tool;
 
+import com.mharness.workspace.TextFiles;
 import com.mharness.workspace.WorkspaceGuard;
+import com.mharness.workspace.WorkspaceIgnore;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
 
@@ -16,6 +18,7 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 /**
  * 在工作区内精确搜索文本。优先调用 ripgrep（{@code rg}），机器上没有 rg 或调用失败时退回 Java 遍历。
@@ -25,9 +28,11 @@ public final class GrepTool implements AgentTool {
     private static final int MAX_HITS = 50;
     private static final int CONTEXT_CHARS = 200;
     private final WorkspaceGuard guard;
+    private final WorkspaceIgnore ignore;
 
     public GrepTool(WorkspaceGuard guard) {
         this.guard = guard;
+        this.ignore = WorkspaceIgnore.of(guard.workspace());
     }
 
     @Override
@@ -55,7 +60,6 @@ public final class GrepTool implements AgentTool {
         String glob = JsonArgs.optionalText(args, "glob", "");
         List<String> lines = tryRipgrep(query, glob);
         if (lines == null) {
-            // rg 不存在、超时或非 0/1 退出码时，用纯 Java 扫文件。
             lines = javaSearch(query, glob);
         }
         if (lines.isEmpty()) {
@@ -66,7 +70,8 @@ public final class GrepTool implements AgentTool {
     }
 
     /**
-     * 固定字面量搜索（{@code -F}），工作目录锁在仓库根。
+     * 固定字面量搜索（{@code -F -e}），工作目录锁在仓库根。
+     * 读满 {@link #MAX_HITS} 后立刻杀掉 rg，避免管道塞满后 20 秒超时再退回全盘扫描。
      * 返回 null 表示需要走 Java 回退；空列表表示搜过但没有命中。
      */
     private List<String> tryRipgrep(String query, String glob) {
@@ -76,14 +81,14 @@ public final class GrepTool implements AgentTool {
         command.add("--no-heading");
         command.add("--color");
         command.add("never");
-        command.add("--max-count");
-        command.add(String.valueOf(MAX_HITS));
         command.add("-F");
+        command.add("-e");
+        command.add(query);
         if (!glob.isBlank()) {
             command.add("--glob");
             command.add(glob);
         }
-        command.add(query);
+        command.add("--");
         command.add(".");
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.directory(guard.workspace().toFile());
@@ -97,12 +102,21 @@ public final class GrepTool implements AgentTool {
                 while ((line = reader.readLine()) != null && lines.size() < MAX_HITS) {
                     lines.add(truncate(line));
                 }
+            } finally {
+                if (process.isAlive()) {
+                    process.destroyForcibly();
+                }
             }
-            if (!process.waitFor(20, TimeUnit.SECONDS)) {
+            if (!process.waitFor(5, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
-                return null;
             }
-            if (process.exitValue() == 0 || process.exitValue() == 1) {
+            int exit;
+            try {
+                exit = process.exitValue();
+            } catch (IllegalThreadStateException e) {
+                return lines.isEmpty() ? null : lines;
+            }
+            if (exit == 0 || exit == 1 || lines.size() >= MAX_HITS) {
                 return lines;
             }
             return null;
@@ -120,11 +134,7 @@ public final class GrepTool implements AgentTool {
         Files.walkFileTree(guard.workspace(), new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                String name = dir.getFileName() == null ? "" : dir.getFileName().toString();
-                if (name.equals(".git") || name.equals("target") || name.equals("node_modules")) {
-                    return FileVisitResult.SKIP_SUBTREE;
-                }
-                return FileVisitResult.CONTINUE;
+                return ignore.skipDirectory(dir) ? FileVisitResult.SKIP_SUBTREE : FileVisitResult.CONTINUE;
             }
 
             @Override
@@ -132,7 +142,7 @@ public final class GrepTool implements AgentTool {
                 if (hits.size() >= MAX_HITS) {
                     return FileVisitResult.TERMINATE;
                 }
-                if (Files.isSymbolicLink(file) || attrs.size() > 1_000_000) {
+                if (WorkspaceIgnore.skipSnapshotFile(file, attrs)) {
                     return FileVisitResult.CONTINUE;
                 }
                 String relative = guard.relativize(file);
@@ -140,10 +150,11 @@ public final class GrepTool implements AgentTool {
                     return FileVisitResult.CONTINUE;
                 }
                 try {
-                    List<String> fileLines = Files.readAllLines(file, StandardCharsets.UTF_8);
-                    for (int i = 0; i < fileLines.size() && hits.size() < MAX_HITS; i++) {
-                        if (fileLines.get(i).contains(query)) {
-                            hits.add(relative + ":" + (i + 1) + ":" + truncate(fileLines.get(i)));
+                    String text = TextFiles.read(file).withLf();
+                    String[] fileLines = text.split("\n", -1);
+                    for (int i = 0; i < fileLines.length && hits.size() < MAX_HITS; i++) {
+                        if (fileLines[i].contains(query)) {
+                            hits.add(relative + ":" + (i + 1) + ":" + truncate(fileLines[i]));
                         }
                     }
                 } catch (IOException ignored) {
@@ -155,10 +166,40 @@ public final class GrepTool implements AgentTool {
         return hits;
     }
 
-    /** 把简单 glob（{@code *} / {@code **}）转成正则再匹配文件名或相对路径。 */
-    private static boolean matchesGlob(String name, String glob) {
-        String regex = glob.replace(".", "\\.").replace("**", "§§").replace("*", ".*").replace("§§", ".*");
-        return name.replace('\\', '/').matches(regex);
+    /**
+     * 把简单 glob（{@code *} / {@code **} / {@code ?}）转成正则再匹配文件名或相对路径。
+     * 其它正则元字符先转义，避免 {@code +} / {@code (} 把模式拆坏。
+     */
+    static boolean matchesGlob(String name, String glob) {
+        if (name == null || glob == null || glob.isBlank()) {
+            return true;
+        }
+        String normalized = name.replace('\\', '/');
+        return Pattern.compile(globToRegex(glob)).matcher(normalized).matches();
+    }
+
+    static String globToRegex(String glob) {
+        StringBuilder regex = new StringBuilder();
+        for (int i = 0; i < glob.length(); i++) {
+            char c = glob.charAt(i);
+            if (c == '*' && i + 1 < glob.length() && glob.charAt(i + 1) == '*') {
+                regex.append(".*");
+                i++;
+                if (i + 1 < glob.length() && glob.charAt(i + 1) == '/') {
+                    i++;
+                    regex.append("(?:.*/)?");
+                }
+            } else if (c == '*') {
+                regex.append("[^/]*");
+            } else if (c == '?') {
+                regex.append("[^/]");
+            } else if (".+()[]{}|^$\\".indexOf(c) >= 0) {
+                regex.append('\\').append(c);
+            } else {
+                regex.append(c);
+            }
+        }
+        return regex.toString();
     }
 
     private static String truncate(String line) {

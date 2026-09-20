@@ -44,6 +44,17 @@ public record ToolResult(
         return new ToolResult(false, error, null, matches);
     }
 
+    /**
+     * 序列化前截短 {@code content}，避免先 toJson 再按字符砍断得到残缺 JSON。
+     * {@code maxChars} 小于 1 时原样返回。
+     */
+    public ToolResult clipped(int maxChars) {
+        if (content == null || maxChars < 1 || content.length() <= maxChars) {
+            return this;
+        }
+        return new ToolResult(success, error, content.substring(0, maxChars) + "\n... truncated ...", matches);
+    }
+
     /** 序列化为模型可见的 JSON；序列化失败时退回手写错误对象。 */
     public String toJson() {
         try {

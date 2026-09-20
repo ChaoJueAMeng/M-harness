@@ -17,4 +17,11 @@ public interface AgentTool {
      * 业务错误应返回 {@link ToolResult} 而不是抛异常；未预期的异常由 AgentLoop 捕获。
      */
     ToolResult execute(String arguments) throws Exception;
+
+    /**
+     * 协作式取消：打断正在执行的外部进程。默认空实现。
+     * 只读工具通常瞬间结束，不必处理。
+     */
+    default void cancel() {
+    }
 }

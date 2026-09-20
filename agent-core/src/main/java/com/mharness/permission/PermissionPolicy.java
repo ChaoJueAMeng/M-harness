@@ -1,7 +1,10 @@
 package com.mharness.permission;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.mharness.tool.AgentTool;
+import com.mharness.tool.JsonArgs;
 
+import java.io.IOException;
 import java.util.Set;
 
 /**
@@ -67,23 +70,22 @@ public final class PermissionPolicy {
     }
 
     /**
-     * 从工具 JSON 参数里抠出 {@code "command": "..."} 的值，供硬拒绝正则匹配。
-     * 解析失败时退回整段 arguments，避免漏拦。
+     * 用与 {@code RunTerminalTool} 相同的 JSON 解析取出 {@code command} 字段，供硬拒绝正则匹配。
+     * 必须和真正执行时看到的命令一致，否则转义引号（{@code \"}）会让手写截取提前结束而漏拦。
+     * 解析失败或字段缺失时退回整段 arguments，宁可多拦不可漏拦。
      */
-    private static String extractCommand(String arguments) {
+    static String extractCommand(String arguments) {
         if (arguments == null) {
             return "";
         }
-        int idx = arguments.indexOf("\"command\"");
-        if (idx < 0) {
+        try {
+            JsonNode node = JsonArgs.parse(arguments).get("command");
+            if (node == null || node.isNull()) {
+                return arguments;
+            }
+            return node.asText();
+        } catch (IOException | RuntimeException e) {
             return arguments;
         }
-        int colon = arguments.indexOf(':', idx);
-        int firstQuote = arguments.indexOf('"', colon + 1);
-        int secondQuote = arguments.indexOf('"', firstQuote + 1);
-        if (firstQuote < 0 || secondQuote < 0) {
-            return arguments;
-        }
-        return arguments.substring(firstQuote + 1, secondQuote);
     }
 }

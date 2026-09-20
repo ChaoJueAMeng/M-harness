@@ -34,6 +34,29 @@ class PermissionPolicyTest {
                 .isEqualTo(PermissionDecision.HARD_DENY);
     }
 
+    @Test
+    void hardDenySeesTheSameCommandAsTheShell() {
+        PermissionPolicy policy = new PermissionPolicy(
+                PermissionMode.AGENT, false, true, new AutoApprovalService(true));
+        // 转义引号让手写截取提前结束；必须与 RunTerminalTool 的 Jackson 解析看到同一条命令。
+        String escaped = "{\"command\":\"echo \\\"hi\\\" && git push --force origin main\"}";
+        assertThat(PermissionPolicy.extractCommand(escaped)).isEqualTo("echo \"hi\" && git push --force origin main");
+        assertThat(policy.evaluate(named("run_terminal"), escaped)).isEqualTo(PermissionDecision.HARD_DENY);
+
+        String unicode = "{\"command\":\"git \\u0070ush --force\"}";
+        assertThat(policy.evaluate(named("run_terminal"), unicode)).isEqualTo(PermissionDecision.HARD_DENY);
+
+        String otherFieldFirst = "{\"cwd\":\"x\",\"command\":\"git reset --hard\"}";
+        assertThat(policy.evaluate(named("run_terminal"), otherFieldFirst)).isEqualTo(PermissionDecision.HARD_DENY);
+    }
+
+    @Test
+    void malformedArgumentsFallBackToWholeText() {
+        assertThat(PermissionPolicy.extractCommand("not json git push --force")).isEqualTo("not json git push --force");
+        assertThat(PermissionPolicy.extractCommand("{\"other\":1}")).isEqualTo("{\"other\":1}");
+        assertThat(PermissionPolicy.extractCommand(null)).isEmpty();
+    }
+
     private static AgentTool named(String name) {
         return new AgentTool() {
             @Override
