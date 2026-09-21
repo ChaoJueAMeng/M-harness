@@ -210,23 +210,45 @@
                                     Padding="10,4"
                                     VerticalAlignment="Center"
                                     Click="BindWorkspace_Click"
-                                    ToolTipService.ToolTip="绑定工作区目录"
+                                    ToolTipService.ToolTip="工作区：选择此对话要读取或修改的本机项目文件夹。未绑定时，对话会使用临时代码本。"
                                     AutomationProperties.Name="绑定工作区目录">
                                 <TextBlock x:Name="WorkspaceNameText" Text="未选择对话" TextTrimming="CharacterEllipsis" MaxWidth="220"/>
                             </Button>
-                            <DropDownButton x:Name="ModeButton" Width="108" VerticalAlignment="Center" Content="Ask">
+                            <DropDownButton x:Name="ModeButton"
+                                            Width="108"
+                                            VerticalAlignment="Center"
+                                            Content="Ask"
+                                            ToolTipService.ToolTip="运行模式：Ask 只读回答问题；Agent 可以读取、修改文件并运行命令。">
                                 <DropDownButton.Flyout>
                                     <MenuFlyout Placement="Bottom">
-                                        <RadioMenuFlyoutItem x:Name="AskModeItem" Text="Ask" GroupName="RunMode" IsChecked="True" Click="SelectAskMode_Click"/>
-                                        <RadioMenuFlyoutItem x:Name="AgentModeItem" Text="Agent" GroupName="RunMode" Click="SelectAgentMode_Click"/>
+                                        <RadioMenuFlyoutItem x:Name="AskModeItem" Text="Ask" GroupName="RunMode" IsChecked="True" Click="SelectAskMode_Click"
+                                                              ToolTipService.ToolTip="只读问答模式：可以搜索和读取文件，但不会修改文件或运行终端命令。"/>
+                                        <RadioMenuFlyoutItem x:Name="AgentModeItem" Text="Agent" GroupName="RunMode" Click="SelectAgentMode_Click"
+                                                              ToolTipService.ToolTip="代理执行模式：可修改文件和运行终端命令；默认会在每次变更前请求确认。"/>
                                     </MenuFlyout>
                                 </DropDownButton.Flyout>
                             </DropDownButton>
-                            <CheckBox x:Name="DryRunBox" Content="Dry-run" VerticalAlignment="Center"/>
-                            <CheckBox x:Name="AutoApproveBox" Content="自动批准" VerticalAlignment="Center"/>
-                            <Button Content="回滚" Click="Rollback_Click"/>
+                            <Border Background="Transparent"
+                                    ToolTipService.ToolTip="试运行：预览将要进行的文件修改和终端命令，但不实际执行、不写入文件，也不会创建检查点。Ask 模式只读，因此此选项不可用；切换到 Agent 模式后可使用。">
+                                <CheckBox x:Name="DryRunBox"
+                                          Content="试运行"
+                                          VerticalAlignment="Center"/>
+                            </Border>
+                            <Border Background="Transparent"
+                                    ToolTipService.ToolTip="自动批准：跳过文件修改和终端命令的逐次确认。Ask 模式不会执行这类操作，因此此选项不可用；切换到 Agent 模式后可使用。高风险操作仍会被禁止。">
+                                <CheckBox x:Name="AutoApproveBox"
+                                          Content="自动批准"
+                                          VerticalAlignment="Center"/>
+                            </Border>
+                            <Button Content="回滚"
+                                    Click="Rollback_Click"
+                                    ToolTipService.ToolTip="回滚：将当前工作区恢复到本次 Agent 任务开始前创建的检查点。"/>
                         </StackPanel>
-                        <Button Grid.Column="1" x:Name="ToolLogButton" Content="工具日志" Click="ToggleToolLog_Click"/>
+                        <Button Grid.Column="1"
+                                x:Name="ToolLogButton"
+                                Content="工具日志"
+                                Click="ToggleToolLog_Click"
+                                ToolTipService.ToolTip="工具日志：显示本次任务调用工具、执行命令及其返回结果的详细记录。"/>
                     </Grid>
                     <TextBox x:Name="PromptBox"
                              Grid.Row="1"
