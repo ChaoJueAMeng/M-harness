@@ -805,13 +805,6 @@ public sealed partial class MainWindow : Window
 
     private FrameworkElement AddMessageBlock(string role, string content)
     {
-        var panel = new StackPanel { Spacing = 4 };
-        panel.Children.Add(new TextBlock
-        {
-            Text = role == "assistant" ? "助手" : "你",
-            Opacity = 0.55,
-            FontSize = 12,
-        });
         FrameworkElement body;
         if (role == "assistant")
         {
@@ -828,8 +821,31 @@ public sealed partial class MainWindow : Window
                 IsTextSelectionEnabled = true,
             };
         }
-        panel.Children.Add(body);
-        MessagePanel.Children.Add(panel);
+
+        // 用颜色而非角色文字区分消息：用户输入是左对齐的蓝色气泡，
+        // 助手回复保持左对齐、无底色的 Markdown 正文。代码块仍是回复内容的一部分。
+        if (role == "user")
+        {
+            var bubble = new Border
+            {
+                Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["AccentFillColorDefaultBrush"],
+                BorderThickness = new Thickness(0),
+                CornerRadius = new CornerRadius(12),
+                Padding = new Thickness(16, 12, 16, 12),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                MaxWidth = 640,
+                Child = body,
+            };
+            if (body is TextBlock text)
+            {
+                text.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextOnAccentFillColorPrimaryBrush"];
+            }
+            MessagePanel.Children.Add(bubble);
+        }
+        else
+        {
+            MessagePanel.Children.Add(body);
+        }
         return body;
     }
 
@@ -1482,9 +1498,9 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 查询当前运行工作区是否已有 checkpoint，写到状态栏。
+    /// 更新状态栏中的当前工作区说明。
     /// </summary>
-    private async Task RefreshCheckpointAsync(string workspace)
+    private Task RefreshCheckpointAsync(string workspace)
     {
         if (string.IsNullOrWhiteSpace(workspace) || !Directory.Exists(workspace))
         {
@@ -1492,35 +1508,10 @@ public sealed partial class MainWindow : Window
             {
                 SetStatus("未绑定工作区，发送任务时使用临时码本");
             }
-            return;
+            return Task.CompletedTask;
         }
-        if (client == null)
-        {
-            SetStatus("工作区：" + workspace);
-            return;
-        }
-        try
-        {
-            JsonElement json = await client.GetCheckpointAsync(workspace, CancellationToken.None);
-            bool hasCheckpoint = json.TryGetProperty("hasCheckpoint", out var hc) && hc.ValueKind == JsonValueKind.True;
-            if (json.TryGetProperty("checkpoint", out var cp) && cp.ValueKind == JsonValueKind.Object)
-            {
-                string id = cp.TryGetProperty("checkpointId", out var cid) ? cid.GetString() ?? "" : "";
-                SetStatus("工作区：" + workspace + "  checkpoint=" + id);
-            }
-            else if (hasCheckpoint)
-            {
-                SetStatus("工作区：" + workspace + "  checkpoint 已存在");
-            }
-            else
-            {
-                SetStatus("工作区：" + workspace + "  没有 checkpoint");
-            }
-        }
-        catch (Exception ex)
-        {
-            SetStatus("工作区：" + workspace + "  (" + ex.Message + ")");
-        }
+        SetStatus("工作区：" + workspace);
+        return Task.CompletedTask;
     }
 
     /// <summary>
